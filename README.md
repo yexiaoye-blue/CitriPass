@@ -6,6 +6,7 @@ CitriPass 是本地优先的密码与凭据管理器。主密码只在客户端�
 
 - [docs](docs/README.md)：产品范围、架构、安全模型和接口草案。
 - [vault-core](vault-core/README.md)：跨端共用的 Rust 加密核心。保险库记录是二进制格式，核心不访问文件、时钟、网络或系统密钥库。
+- [vault-exchange](vault-exchange/README.md)：其他格式和保险库之间的导入、导出。第一版可以读入 KeePass KDBX。
 
 Web、浏览器扩展、桌面、移动和服务端还没有放进这个仓库。
 

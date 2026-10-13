@@ -1,0 +1,13 @@
+[package]
+name = "vault-exchange"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Import and export adapters for CitriPass vaults"
+
+[dependencies]
+data-encoding = "2"
+keepass = { version = "0.15", features = ["save_kdbx4"] }
+thiserror = "2"
+uuid = "1"
+vault-core = { path = "../vault-core" }
