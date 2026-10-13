@@ -80,6 +80,8 @@ pub enum InputError {
     DeletedItem,
     /// A login operation was used on another item kind.
     NotLoginItem,
+    /// The operation needs an HOTP.
+    NotHotp,
     /// A vault id is nil or does not match the open vault.
     InvalidVaultId,
     /// An item id is nil.
@@ -130,6 +132,7 @@ impl fmt::Display for InputError {
             Self::InvalidFolderId => f.write_str("Folder ID must not be nil"),
             Self::DeletedItem => f.write_str("Operation is not allowed on a deleted item"),
             Self::NotLoginItem => f.write_str("Item must be a login item"),
+            Self::NotHotp => f.write_str("Item must contain an HOTP"),
             Self::InvalidVaultId => f.write_str("Vault ID must not be nil"),
             Self::InvalidItemId => f.write_str("Item ID must not be nil"),
             Self::InvalidDeviceId => f.write_str("Device ID must not be nil"),

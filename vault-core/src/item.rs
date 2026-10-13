@@ -5,7 +5,7 @@
 
 use crate::codec::{Buf, Cursor};
 use crate::limits::{MAX_METADATA, MAX_PLAINTEXT};
-use crate::totp::{Totp, TotpAlgorithm};
+use crate::totp::{Hotp, Otp, Totp, TotpAlgorithm};
 use crate::{Error, InputError, Result};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -17,6 +17,7 @@ const KIND_FOLDER: u16 = 3;
 const KIND_TOTP: u16 = 4;
 const KIND_CARD: u16 = 5;
 const KIND_IDENTITY: u16 = 6;
+const KIND_HOTP: u16 = 7;
 
 /// Login fields copied into an item. The strings are wiped on drop.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -34,7 +35,7 @@ pub struct LoginDraft {
 /// Secret payload stored inside one item.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub enum ItemData {
-    /// Username, password, URLs, and an optional TOTP.
+    /// Username, password, URLs, and an optional one-time password.
     Login {
         /// Login username.
         username: String,
@@ -42,8 +43,8 @@ pub enum ItemData {
         password: String,
         /// Associated URLs.
         urls: Vec<String>,
-        /// Optional TOTP stored with the login.
-        totp: Option<Totp>,
+        /// Optional TOTP or HOTP stored with the login.
+        otp: Option<Otp>,
     },
     /// Notes live on the common item fields.
     SecureNote,
@@ -57,6 +58,11 @@ pub enum ItemData {
     Totp {
         /// TOTP parameters.
         totp: Totp,
+    },
+    /// Standalone HOTP.
+    Hotp {
+        /// HOTP parameters. The counter advances when a code is issued.
+        hotp: Hotp,
     },
     /// Payment card.
     Card {
@@ -175,10 +181,9 @@ impl ItemDraft {
             } if id.is_nil() => {
                 return Err(Error::InvalidInput(InputError::InvalidFolderId));
             }
-            ItemData::Login {
-                totp: Some(totp), ..
-            }
-            | ItemData::Totp { totp } => totp.validate()?,
+            ItemData::Login { otp: Some(otp), .. } => otp.validate()?,
+            ItemData::Totp { totp } => totp.validate()?,
+            ItemData::Hotp { hotp } => hotp.validate()?,
             _ => {}
         }
         Ok(())
@@ -209,7 +214,7 @@ impl From<LoginDraft> for ItemDraft {
                 username: std::mem::take(&mut draft.username),
                 password: std::mem::take(&mut draft.password),
                 urls: Vec::new(),
-                totp: None,
+                otp: None,
             },
         );
         item.notes = std::mem::take(&mut draft.notes);
@@ -307,6 +312,7 @@ fn write_common(buf: &mut Buf, draft: &ItemDraft) -> Result<()> {
         ItemData::SecureNote => KIND_NOTE,
         ItemData::Folder { .. } => KIND_FOLDER,
         ItemData::Totp { .. } => KIND_TOTP,
+        ItemData::Hotp { .. } => KIND_HOTP,
         ItemData::Card { .. } => KIND_CARD,
         ItemData::Identity { .. } => KIND_IDENTITY,
     };
@@ -341,7 +347,7 @@ fn write_payload(buf: &mut Buf, data: &ItemData) -> Result<()> {
             username,
             password,
             urls,
-            totp,
+            otp,
         } => {
             buf.str(username)?;
             buf.str(password)?;
@@ -349,17 +355,23 @@ fn write_payload(buf: &mut Buf, data: &ItemData) -> Result<()> {
             for url in urls {
                 buf.str(url)?;
             }
-            match totp {
+            // 0 is absent, 1 is TOTP, 2 is HOTP. Older records only used 0 and 1.
+            match otp {
                 None => buf.u8(0)?,
-                Some(totp) => {
+                Some(Otp::Totp(totp)) => {
                     buf.u8(1)?;
                     write_totp(buf, totp)?;
+                }
+                Some(Otp::Hotp(hotp)) => {
+                    buf.u8(2)?;
+                    write_hotp(buf, hotp)?;
                 }
             }
         }
         ItemData::SecureNote => {}
         ItemData::Folder { parent_id } => write_uuid(buf, *parent_id)?,
         ItemData::Totp { totp } => write_totp(buf, totp)?,
+        ItemData::Hotp { hotp } => write_hotp(buf, hotp)?,
         ItemData::Card {
             cardholder,
             number,
@@ -388,13 +400,24 @@ fn write_payload(buf: &mut Buf, data: &ItemData) -> Result<()> {
 
 fn write_totp(buf: &mut Buf, totp: &Totp) -> Result<()> {
     buf.str(&totp.secret)?;
-    buf.u16(match totp.algorithm {
+    write_algorithm(buf, totp.algorithm)?;
+    buf.u8(u8::try_from(totp.digits).map_err(|_| Error::Internal)?)?;
+    buf.u32(totp.period)
+}
+
+fn write_hotp(buf: &mut Buf, hotp: &Hotp) -> Result<()> {
+    buf.str(&hotp.secret)?;
+    write_algorithm(buf, hotp.algorithm)?;
+    buf.u8(u8::try_from(hotp.digits).map_err(|_| Error::Internal)?)?;
+    buf.u64(hotp.counter)
+}
+
+fn write_algorithm(buf: &mut Buf, algorithm: TotpAlgorithm) -> Result<()> {
+    buf.u16(match algorithm {
         TotpAlgorithm::Sha1 => 1,
         TotpAlgorithm::Sha256 => 2,
         TotpAlgorithm::Sha512 => 3,
-    })?;
-    buf.u8(u8::try_from(totp.digits).map_err(|_| Error::Internal)?)?;
-    buf.u32(totp.period)
+    })
 }
 
 fn write_uuid(buf: &mut Buf, id: Option<Uuid>) -> Result<()> {
@@ -480,16 +503,17 @@ fn read_payload(cursor: &mut Cursor<'_>, kind: u16) -> Result<ItemData> {
             for _ in 0..url_count {
                 urls.push(cursor.str()?);
             }
-            let totp = match cursor.u8()? {
+            let otp = match cursor.u8()? {
                 0 => None,
-                1 => Some(read_totp(cursor)?),
+                1 => Some(Otp::Totp(read_totp(cursor)?)),
+                2 => Some(Otp::Hotp(read_hotp(cursor)?)),
                 _ => return Err(Error::InvalidInput(InputError::MalformedEncoding)),
             };
             Ok(ItemData::Login {
                 username,
                 password,
                 urls,
-                totp,
+                otp,
             })
         }
         KIND_NOTE => Ok(ItemData::SecureNote),
@@ -498,6 +522,9 @@ fn read_payload(cursor: &mut Cursor<'_>, kind: u16) -> Result<ItemData> {
         }),
         KIND_TOTP => Ok(ItemData::Totp {
             totp: read_totp(cursor)?,
+        }),
+        KIND_HOTP => Ok(ItemData::Hotp {
+            hotp: read_hotp(cursor)?,
         }),
         KIND_CARD => Ok(ItemData::Card {
             cardholder: cursor.str()?,
@@ -516,19 +543,42 @@ fn read_payload(cursor: &mut Cursor<'_>, kind: u16) -> Result<ItemData> {
 }
 
 fn read_totp(cursor: &mut Cursor<'_>) -> Result<Totp> {
-    let secret = cursor.str()?;
-    let algorithm = match cursor.u16()? {
-        1 => TotpAlgorithm::Sha1,
-        2 => TotpAlgorithm::Sha256,
-        3 => TotpAlgorithm::Sha512,
-        _ => return Err(Error::UnsupportedFormat),
-    };
     Ok(Totp {
-        secret,
-        algorithm,
+        secret: cursor.str()?,
+        algorithm: read_algorithm(cursor)?,
         digits: u32::from(cursor.u8()?),
         period: cursor.u32()?,
     })
+}
+
+fn read_hotp(cursor: &mut Cursor<'_>) -> Result<Hotp> {
+    Ok(Hotp {
+        secret: cursor.str()?,
+        algorithm: read_algorithm(cursor)?,
+        digits: u32::from(cursor.u8()?),
+        counter: cursor.u64()?,
+    })
+}
+
+fn read_algorithm(cursor: &mut Cursor<'_>) -> Result<TotpAlgorithm> {
+    match cursor.u16()? {
+        1 => Ok(TotpAlgorithm::Sha1),
+        2 => Ok(TotpAlgorithm::Sha256),
+        3 => Ok(TotpAlgorithm::Sha512),
+        _ => Err(Error::UnsupportedFormat),
+    }
+}
+
+/// Issue the current HOTP and advance its counter inside `data`.
+pub(crate) fn advance_hotp(data: &mut ItemData) -> Result<Zeroizing<String>> {
+    match data {
+        ItemData::Hotp { hotp } => hotp.next_code(),
+        ItemData::Login {
+            otp: Some(Otp::Hotp(hotp)),
+            ..
+        } => hotp.next_code(),
+        _ => Err(Error::InvalidInput(InputError::NotHotp)),
+    }
 }
 
 fn read_uuid(cursor: &mut Cursor<'_>) -> Result<Option<Uuid>> {
@@ -551,7 +601,7 @@ mod tests {
                 username: "user".into(),
                 password: "secret".into(),
                 urls: vec!["https://example.test".into()],
-                totp: None,
+                otp: None,
             },
         );
         draft.tags = vec!["home".into()];
@@ -570,5 +620,42 @@ mod tests {
             decode_body(&bytes, Uuid::from_u128(1), 1, false).unwrap_err(),
             Error::UnsupportedFormat
         );
+    }
+
+    #[test]
+    fn hotp_roundtrip_and_advance() {
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        let mut draft = ItemDraft::new(
+            "Token",
+            ItemData::Login {
+                username: String::new(),
+                password: String::new(),
+                urls: Vec::new(),
+                otp: Some(Otp::Hotp(Hotp::new(secret, 0))),
+            },
+        );
+        let bytes = encode_body(&draft).unwrap();
+        let item = decode_body(&bytes, Uuid::from_u128(2), 1, false).unwrap();
+        assert_eq!(item.content, draft);
+
+        let code = advance_hotp(&mut draft.data).unwrap();
+        assert_eq!(code.as_str(), "755224");
+        match &draft.data {
+            ItemData::Login {
+                otp: Some(Otp::Hotp(hotp)),
+                ..
+            } => assert_eq!(hotp.counter, 1),
+            _ => panic!("hotp login"),
+        }
+
+        let mut standalone = ItemData::Hotp {
+            hotp: Hotp::new(secret, 1),
+        };
+        assert_eq!(advance_hotp(&mut standalone).unwrap().as_str(), "287082");
+        let mut note = ItemData::SecureNote;
+        assert!(matches!(
+            advance_hotp(&mut note),
+            Err(Error::InvalidInput(InputError::NotHotp))
+        ));
     }
 }

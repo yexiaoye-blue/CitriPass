@@ -206,8 +206,8 @@ impl UnlockedVault {
         if current.deleted {
             return Err(Error::InvalidInput(InputError::DeletedItem));
         }
-        let (urls, totp) = match &current.data {
-            ItemData::Login { urls, totp, .. } => (urls.clone(), totp.clone()),
+        let (urls, otp) = match &current.data {
+            ItemData::Login { urls, otp, .. } => (urls.clone(), otp.clone()),
             _ => return Err(Error::InvalidInput(InputError::NotLoginItem)),
         };
         let mut next = current.content.clone();
@@ -217,9 +217,29 @@ impl UnlockedVault {
             username: std::mem::take(&mut draft.username),
             password: std::mem::take(&mut draft.password),
             urls,
-            totp,
+            otp,
         };
         self.update_item(item_id, next)
+    }
+
+    /// Generate the current HOTP code and store the next counter.
+    ///
+    /// The code is returned only after the new counter is stored. A second call
+    /// produces the following code. TOTP items are rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InputError::NotHotp`] when the item has no HOTP, and
+    /// [`InputError::DeletedItem`] for a tombstone.
+    pub fn next_hotp_code(&mut self, item_id: Uuid) -> Result<Zeroizing<String>> {
+        let current = self.get_item(item_id)?;
+        if current.deleted {
+            return Err(Error::InvalidInput(InputError::DeletedItem));
+        }
+        let mut draft = current.content.clone();
+        let code = item::advance_hotp(&mut draft.data)?;
+        self.update_item(item_id, draft)?;
+        Ok(code)
     }
 
     /// Encrypt a new item at revision 1.

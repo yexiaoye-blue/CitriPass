@@ -25,6 +25,6 @@ pub use item::{AttachmentRef, CustomField, Item, ItemData, ItemDraft, LoginDraft
 pub use limits::ATTACHMENT_CHUNK_SIZE;
 pub use password::{generate_password, PasswordOptions};
 pub use recovery::RecoveryKey;
-pub use totp::{Totp, TotpAlgorithm};
+pub use totp::{Hotp, Otp, Totp, TotpAlgorithm};
 pub use vault::UnlockedVault;
 pub use wire::{SealedItem, SealedVault};
