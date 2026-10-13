@@ -1,0 +1,21 @@
+[package]
+name = "vault-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CitriPass vault core: binary records, Argon2id, and XChaCha20-Poly1305"
+
+[dependencies]
+argon2 = { version = "0.5", features = ["zeroize"] }
+base64 = "0.22"
+chacha20poly1305 = { version = "0.10", features = ["stream"] }
+data-encoding = "2"
+hmac = "0.12"
+rand = "0.8"
+sha1 = "0.10"
+sha2 = "0.10"
+uuid = "1"
+zeroize = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

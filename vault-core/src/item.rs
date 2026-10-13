@@ -1,0 +1,574 @@
+//! Plaintext items and the versioned body layout.
+//!
+//! Schema 1 is a sequence of big-endian fields, not a self-describing document.
+//! Unknown schema numbers are rejected.
+
+use crate::codec::{Buf, Cursor};
+use crate::limits::{MAX_METADATA, MAX_PLAINTEXT};
+use crate::totp::{Totp, TotpAlgorithm};
+use crate::{Error, InputError, Result};
+use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+const SCHEMA: u16 = 1;
+const KIND_LOGIN: u16 = 1;
+const KIND_NOTE: u16 = 2;
+const KIND_FOLDER: u16 = 3;
+const KIND_TOTP: u16 = 4;
+const KIND_CARD: u16 = 5;
+const KIND_IDENTITY: u16 = 6;
+
+/// Login fields copied into an item. The strings are wiped on drop.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct LoginDraft {
+    /// Display title.
+    pub title: String,
+    /// Login username.
+    pub username: String,
+    /// Login password.
+    pub password: String,
+    /// Freeform notes.
+    pub notes: String,
+}
+
+/// Secret payload stored inside one item.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub enum ItemData {
+    /// Username, password, URLs, and an optional TOTP.
+    Login {
+        /// Login username.
+        username: String,
+        /// Login password.
+        password: String,
+        /// Associated URLs.
+        urls: Vec<String>,
+        /// Optional TOTP stored with the login.
+        totp: Option<Totp>,
+    },
+    /// Notes live on the common item fields.
+    SecureNote,
+    /// Folder. The parent is absent for a root folder.
+    Folder {
+        /// Parent folder id.
+        #[zeroize(skip)]
+        parent_id: Option<Uuid>,
+    },
+    /// Standalone TOTP.
+    Totp {
+        /// TOTP parameters.
+        totp: Totp,
+    },
+    /// Payment card.
+    Card {
+        /// Cardholder name.
+        cardholder: String,
+        /// Card number.
+        number: String,
+        /// Expiry text as entered by the caller.
+        expiry: String,
+        /// Card security code.
+        security_code: String,
+    },
+    /// Identity contact fields.
+    Identity {
+        /// Full name.
+        full_name: String,
+        /// Email address.
+        email: String,
+        /// Phone number.
+        phone: String,
+        /// Postal address.
+        address: String,
+    },
+}
+
+/// Extra named field inside the item body.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct CustomField {
+    /// Field name.
+    pub name: String,
+    /// Field value.
+    pub value: String,
+    /// Whether a host should conceal the value.
+    #[zeroize(skip)]
+    pub concealed: bool,
+}
+
+/// Attachment selected by an item. The file bytes live outside the item.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct AttachmentRef {
+    /// Attachment id.
+    #[zeroize(skip)]
+    pub attachment_id: Uuid,
+    /// Attachment revision, starting at one.
+    #[zeroize(skip)]
+    pub revision: u64,
+    /// File name. It is stored only inside the encrypted item.
+    pub file_name: String,
+    /// Media type.
+    pub media_type: String,
+}
+
+/// Complete item content, validated before encryption.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct ItemDraft {
+    /// Display title.
+    pub title: String,
+    /// Freeform notes.
+    pub notes: String,
+    /// Kind-specific secret.
+    pub data: ItemData,
+    /// Containing folder. None is the vault root.
+    #[zeroize(skip)]
+    pub folder_id: Option<Uuid>,
+    /// Favorite flag.
+    #[zeroize(skip)]
+    pub favorite: bool,
+    /// Tags.
+    pub tags: Vec<String>,
+    /// Custom fields.
+    pub custom_fields: Vec<CustomField>,
+    /// Attachment references.
+    pub attachments: Vec<AttachmentRef>,
+}
+
+impl ItemDraft {
+    /// Build a draft. Validation runs when the draft is encrypted.
+    pub fn new(title: impl Into<String>, data: ItemData) -> Self {
+        Self {
+            title: title.into(),
+            notes: String::new(),
+            data,
+            folder_id: None,
+            favorite: false,
+            tags: Vec::new(),
+            custom_fields: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.title.trim().is_empty() {
+            return Err(Error::InvalidInput(InputError::EmptyTitle));
+        }
+        if self.folder_id.is_some_and(|id| id.is_nil()) {
+            return Err(Error::InvalidInput(InputError::InvalidFolderId));
+        }
+        if self.tags.len() > MAX_METADATA
+            || self.custom_fields.len() > MAX_METADATA
+            || self.attachments.len() > MAX_METADATA
+        {
+            return Err(Error::InvalidInput(InputError::TooManyMetadataEntries {
+                max_entries: MAX_METADATA,
+            }));
+        }
+        if self.attachments.iter().any(|attachment| {
+            attachment.attachment_id.is_nil()
+                || attachment.revision == 0
+                || attachment.file_name.is_empty()
+        }) {
+            return Err(Error::InvalidInput(InputError::InvalidAttachmentReference));
+        }
+        match &self.data {
+            ItemData::Folder {
+                parent_id: Some(id),
+            } if id.is_nil() => {
+                return Err(Error::InvalidInput(InputError::InvalidFolderId));
+            }
+            ItemData::Login {
+                totp: Some(totp), ..
+            }
+            | ItemData::Totp { totp } => totp.validate()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Login password, if this draft is a login.
+    pub fn login_password(&self) -> Option<&str> {
+        match &self.data {
+            ItemData::Login { password, .. } => Some(password),
+            _ => None,
+        }
+    }
+
+    /// Login username, if this draft is a login.
+    pub fn login_username(&self) -> Option<&str> {
+        match &self.data {
+            ItemData::Login { username, .. } => Some(username),
+            _ => None,
+        }
+    }
+}
+
+impl From<LoginDraft> for ItemDraft {
+    fn from(mut draft: LoginDraft) -> Self {
+        let mut item = Self::new(
+            std::mem::take(&mut draft.title),
+            ItemData::Login {
+                username: std::mem::take(&mut draft.username),
+                password: std::mem::take(&mut draft.password),
+                urls: Vec::new(),
+                totp: None,
+            },
+        );
+        item.notes = std::mem::take(&mut draft.notes);
+        item
+    }
+}
+
+/// Decrypted item. The content is wiped on drop.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Item {
+    /// Item id.
+    pub item_id: Uuid,
+    /// Record revision, starting at one.
+    pub revision: u64,
+    /// Tombstone flag. It is authenticated with the ciphertext.
+    pub deleted: bool,
+    /// Plaintext content.
+    pub content: ItemDraft,
+}
+
+impl std::ops::Deref for Item {
+    type Target = ItemDraft;
+    fn deref(&self) -> &ItemDraft {
+        &self.content
+    }
+}
+
+impl std::fmt::Debug for Item {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Item")
+            .field("item_id", &self.item_id)
+            .field("revision", &self.revision)
+            .field("deleted", &self.deleted)
+            .field("content", &"***")
+            .finish()
+    }
+}
+
+macro_rules! redacted {
+    ($($name:ty),*) => {$(
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(concat!(stringify!($name), "(***)"))
+            }
+        }
+    )*};
+}
+redacted!(LoginDraft, ItemDraft, ItemData, CustomField, AttachmentRef);
+
+pub(crate) fn encode_body(draft: &ItemDraft) -> Result<Zeroizing<Vec<u8>>> {
+    draft.validate()?;
+    let mut buf = Buf::with_limit(MAX_PLAINTEXT);
+    buf.u16(SCHEMA)?;
+    write_common(&mut buf, draft)?;
+    write_payload(&mut buf, &draft.data)?;
+    Ok(Zeroizing::new(buf.finish()))
+}
+
+pub(crate) fn decode_body(
+    bytes: &[u8],
+    item_id: Uuid,
+    revision: u64,
+    deleted: bool,
+) -> Result<Item> {
+    if bytes.len() > MAX_PLAINTEXT {
+        return Err(Error::Integrity);
+    }
+    let mut cursor = Cursor::new(bytes);
+    let schema = cursor.u16().map_err(|_| Error::Integrity)?;
+    if schema != SCHEMA {
+        return Err(Error::UnsupportedFormat);
+    }
+    let draft = read_draft(&mut cursor).map_err(stored)?;
+    cursor.finish().map_err(|_| Error::Integrity)?;
+    draft.validate().map_err(|_| Error::Integrity)?;
+    Ok(Item {
+        item_id,
+        revision,
+        deleted,
+        content: draft,
+    })
+}
+
+fn stored(error: Error) -> Error {
+    match error {
+        Error::UnsupportedFormat => Error::UnsupportedFormat,
+        Error::LimitExceeded => Error::LimitExceeded,
+        _ => Error::Integrity,
+    }
+}
+
+fn write_common(buf: &mut Buf, draft: &ItemDraft) -> Result<()> {
+    let kind = match draft.data {
+        ItemData::Login { .. } => KIND_LOGIN,
+        ItemData::SecureNote => KIND_NOTE,
+        ItemData::Folder { .. } => KIND_FOLDER,
+        ItemData::Totp { .. } => KIND_TOTP,
+        ItemData::Card { .. } => KIND_CARD,
+        ItemData::Identity { .. } => KIND_IDENTITY,
+    };
+    buf.u16(kind)?;
+    buf.str(&draft.title)?;
+    buf.str(&draft.notes)?;
+    buf.u8(u8::from(draft.favorite))?;
+    write_uuid(buf, draft.folder_id)?;
+    buf.u16(u16::try_from(draft.tags.len()).map_err(|_| Error::LimitExceeded)?)?;
+    for tag in &draft.tags {
+        buf.str(tag)?;
+    }
+    buf.u16(u16::try_from(draft.custom_fields.len()).map_err(|_| Error::LimitExceeded)?)?;
+    for field in &draft.custom_fields {
+        buf.str(&field.name)?;
+        buf.str(&field.value)?;
+        buf.u8(u8::from(field.concealed))?;
+    }
+    buf.u16(u16::try_from(draft.attachments.len()).map_err(|_| Error::LimitExceeded)?)?;
+    for attachment in &draft.attachments {
+        buf.push(attachment.attachment_id.as_bytes())?;
+        buf.u64(attachment.revision)?;
+        buf.str(&attachment.file_name)?;
+        buf.str(&attachment.media_type)?;
+    }
+    Ok(())
+}
+
+fn write_payload(buf: &mut Buf, data: &ItemData) -> Result<()> {
+    match data {
+        ItemData::Login {
+            username,
+            password,
+            urls,
+            totp,
+        } => {
+            buf.str(username)?;
+            buf.str(password)?;
+            buf.u16(u16::try_from(urls.len()).map_err(|_| Error::LimitExceeded)?)?;
+            for url in urls {
+                buf.str(url)?;
+            }
+            match totp {
+                None => buf.u8(0)?,
+                Some(totp) => {
+                    buf.u8(1)?;
+                    write_totp(buf, totp)?;
+                }
+            }
+        }
+        ItemData::SecureNote => {}
+        ItemData::Folder { parent_id } => write_uuid(buf, *parent_id)?,
+        ItemData::Totp { totp } => write_totp(buf, totp)?,
+        ItemData::Card {
+            cardholder,
+            number,
+            expiry,
+            security_code,
+        } => {
+            buf.str(cardholder)?;
+            buf.str(number)?;
+            buf.str(expiry)?;
+            buf.str(security_code)?;
+        }
+        ItemData::Identity {
+            full_name,
+            email,
+            phone,
+            address,
+        } => {
+            buf.str(full_name)?;
+            buf.str(email)?;
+            buf.str(phone)?;
+            buf.str(address)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_totp(buf: &mut Buf, totp: &Totp) -> Result<()> {
+    buf.str(&totp.secret)?;
+    buf.u16(match totp.algorithm {
+        TotpAlgorithm::Sha1 => 1,
+        TotpAlgorithm::Sha256 => 2,
+        TotpAlgorithm::Sha512 => 3,
+    })?;
+    buf.u8(u8::try_from(totp.digits).map_err(|_| Error::Internal)?)?;
+    buf.u32(totp.period)
+}
+
+fn write_uuid(buf: &mut Buf, id: Option<Uuid>) -> Result<()> {
+    match id {
+        None => buf.u8(0),
+        Some(id) => {
+            buf.u8(1)?;
+            buf.push(id.as_bytes())
+        }
+    }
+}
+
+fn read_draft(cursor: &mut Cursor<'_>) -> Result<ItemDraft> {
+    let kind = cursor.u16()?;
+    let title = cursor.str()?;
+    let notes = cursor.str()?;
+    let favorite = match cursor.u8()? {
+        0 => false,
+        1 => true,
+        _ => return Err(Error::InvalidInput(InputError::MalformedEncoding)),
+    };
+    let folder_id = read_uuid(cursor)?;
+    let tag_count = cursor.u16()? as usize;
+    if tag_count > MAX_METADATA {
+        return Err(Error::LimitExceeded);
+    }
+    let mut tags = Vec::with_capacity(tag_count);
+    for _ in 0..tag_count {
+        tags.push(cursor.str()?);
+    }
+    let field_count = cursor.u16()? as usize;
+    if field_count > MAX_METADATA {
+        return Err(Error::LimitExceeded);
+    }
+    let mut custom_fields = Vec::with_capacity(field_count);
+    for _ in 0..field_count {
+        custom_fields.push(CustomField {
+            name: cursor.str()?,
+            value: cursor.str()?,
+            concealed: match cursor.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::InvalidInput(InputError::MalformedEncoding)),
+            },
+        });
+    }
+    let attachment_count = cursor.u16()? as usize;
+    if attachment_count > MAX_METADATA {
+        return Err(Error::LimitExceeded);
+    }
+    let mut attachments = Vec::with_capacity(attachment_count);
+    for _ in 0..attachment_count {
+        attachments.push(AttachmentRef {
+            attachment_id: Uuid::from_bytes(cursor.array()?),
+            revision: cursor.u64()?,
+            file_name: cursor.str()?,
+            media_type: cursor.str()?,
+        });
+    }
+    let data = read_payload(cursor, kind)?;
+    Ok(ItemDraft {
+        title,
+        notes,
+        data,
+        folder_id,
+        favorite,
+        tags,
+        custom_fields,
+        attachments,
+    })
+}
+
+fn read_payload(cursor: &mut Cursor<'_>, kind: u16) -> Result<ItemData> {
+    match kind {
+        KIND_LOGIN => {
+            let username = cursor.str()?;
+            let password = cursor.str()?;
+            let url_count = cursor.u16()? as usize;
+            if url_count > MAX_METADATA {
+                return Err(Error::LimitExceeded);
+            }
+            let mut urls = Vec::with_capacity(url_count);
+            for _ in 0..url_count {
+                urls.push(cursor.str()?);
+            }
+            let totp = match cursor.u8()? {
+                0 => None,
+                1 => Some(read_totp(cursor)?),
+                _ => return Err(Error::InvalidInput(InputError::MalformedEncoding)),
+            };
+            Ok(ItemData::Login {
+                username,
+                password,
+                urls,
+                totp,
+            })
+        }
+        KIND_NOTE => Ok(ItemData::SecureNote),
+        KIND_FOLDER => Ok(ItemData::Folder {
+            parent_id: read_uuid(cursor)?,
+        }),
+        KIND_TOTP => Ok(ItemData::Totp {
+            totp: read_totp(cursor)?,
+        }),
+        KIND_CARD => Ok(ItemData::Card {
+            cardholder: cursor.str()?,
+            number: cursor.str()?,
+            expiry: cursor.str()?,
+            security_code: cursor.str()?,
+        }),
+        KIND_IDENTITY => Ok(ItemData::Identity {
+            full_name: cursor.str()?,
+            email: cursor.str()?,
+            phone: cursor.str()?,
+            address: cursor.str()?,
+        }),
+        _ => Err(Error::UnsupportedFormat),
+    }
+}
+
+fn read_totp(cursor: &mut Cursor<'_>) -> Result<Totp> {
+    let secret = cursor.str()?;
+    let algorithm = match cursor.u16()? {
+        1 => TotpAlgorithm::Sha1,
+        2 => TotpAlgorithm::Sha256,
+        3 => TotpAlgorithm::Sha512,
+        _ => return Err(Error::UnsupportedFormat),
+    };
+    Ok(Totp {
+        secret,
+        algorithm,
+        digits: u32::from(cursor.u8()?),
+        period: cursor.u32()?,
+    })
+}
+
+fn read_uuid(cursor: &mut Cursor<'_>) -> Result<Option<Uuid>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(Uuid::from_bytes(cursor.array()?))),
+        _ => Err(Error::InvalidInput(InputError::MalformedEncoding)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_roundtrip_keeps_login_fields() {
+        let mut draft = ItemDraft::new(
+            "Title",
+            ItemData::Login {
+                username: "user".into(),
+                password: "secret".into(),
+                urls: vec!["https://example.test".into()],
+                totp: None,
+            },
+        );
+        draft.tags = vec!["home".into()];
+        let bytes = encode_body(&draft).unwrap();
+        let item = decode_body(&bytes, Uuid::from_u128(1), 1, false).unwrap();
+        assert_eq!(item.content, draft);
+        assert_eq!(item.login_password(), Some("secret"));
+    }
+
+    #[test]
+    fn unknown_schema_is_rejected() {
+        let mut bytes = encode_body(&ItemDraft::new("Title", ItemData::SecureNote)).unwrap();
+        bytes[0] = 0;
+        bytes[1] = 2;
+        assert_eq!(
+            decode_body(&bytes, Uuid::from_u128(1), 1, false).unwrap_err(),
+            Error::UnsupportedFormat
+        );
+    }
+}
