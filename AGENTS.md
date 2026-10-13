@@ -4,7 +4,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## Project skills
 
-For Rust code changes and review, read `vault-core/.agents/skills/rust-best-practices/SKILL.md`, `vault-core/.agents/skills/rust-engineer/SKILL.md`, and their relevant references. For Rust tests, read `vault-core/.agents/skills/rust-testing/SKILL.md`. For system architecture and dependency boundaries, read `vault-core/.agents/skills/clean-architecture/SKILL.md`. They are project-local, pinned copies; see `vault-core/.agents/skills/SOURCES.md`. Apply guidance pragmatically: CitriPass security invariants and explicit user instructions take precedence. Do not weaken KDFs or replace cryptographic algorithms to improve benchmark results or coverage targets. Use release measurements and regression tests for core changes.
+For Rust code changes and review, read `vault-core/.agents/skills/rust-best-practices/SKILL.md`, `vault-core/.agents/skills/rust-engineer/SKILL.md`, and their relevant references. For Rust tests, read `vault-core/.agents/skills/rust-testing/SKILL.md`. For system architecture and dependency boundaries, read `vault-core/.agents/skills/clean-architecture/SKILL.md`. For commit messages, read `vault-core/.agents/skills/git-commit/SKILL.md` and use Conventional Commits. They are project-local, pinned copies; see `vault-core/.agents/skills/SOURCES.md`. Apply guidance pragmatically: CitriPass security invariants and explicit user instructions take precedence. Do not weaken KDFs or replace cryptographic algorithms to improve benchmark results or coverage targets. Use release measurements and regression tests for core changes.
 
 ## Delivery contract
 
