@@ -1,0 +1,47 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Go
+*.exe
+*.test
+
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Local databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor and OS
+.obsidian/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Local exercises, not part of the product
+/practice/
