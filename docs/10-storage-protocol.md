@@ -41,6 +41,8 @@ vault-storage-sqlite 实现 VaultStore，负责：
 
 当前实现使用 bundled SQLite，测试覆盖文件重开、事务回滚、密文条目、outbox 和 cursor。生产接入仍需补充正式迁移策略、附件索引和平台文件权限配置。
 
+citri 的 Session 当前通过 vault-storage-sqlite 工作；CLI 的 --path 参数指向 SQLite 数据库。旧 CPV1/CPI1 文件不会自动迁移，后续需要单独的迁移命令。
+
 IndexedDB 可以实现同一组协议。SQLCipher 或系统磁盘加密属于本地文件保护层，不能替代 item-level AEAD。
 
 ## 4. 远端边界
