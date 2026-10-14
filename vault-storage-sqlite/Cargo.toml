@@ -1,0 +1,13 @@
+[package]
+name = "vault-storage-sqlite"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "SQLite adapter for the CitriPass storage SPI"
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+thiserror = "2"
+uuid = "1"
+vault-core = { path = "../vault-core" }
+vault-storage = { path = "../vault-storage" }
