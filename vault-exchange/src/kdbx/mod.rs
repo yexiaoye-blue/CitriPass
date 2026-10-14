@@ -22,6 +22,9 @@ use crate::{Error, Result};
 /// otherwise. An empty title uses the username, then `Imported entry`, so one
 /// blank title does not reject the file.
 ///
+/// KeePass may repeat `<String>` and place `Times`, `IconID`, or `History` between
+/// those fields. Those entries are still read.
+///
 /// History, Auto-Type, custom icons, attachments, recycle-bin records, plugin
 /// custom data, and one-time passwords this vault cannot store are reported in
 /// [`ImportPlan::skipped`](crate::ImportPlan::skipped). The rest of the entry is
@@ -113,6 +116,19 @@ mod tests {
             .import(&ImportSource::new(&bytes, "secret").with_key_file(key_file))
             .unwrap();
         assert_eq!(plan.items[0].draft.title, "Keyed");
+    }
+
+    #[test]
+    fn string_fields_split_by_other_elements_are_imported() {
+        // Synthetic KDBX 3, password "secret", one entry. Its first <String> sits
+        // before <Times>, matching KeePass files whose string fields are not consecutive.
+        let bytes = include_bytes!("../../tests/fixtures/interleaved-strings.kdbx");
+        let plan = KdbxImporter
+            .import(&ImportSource::new(bytes, "secret"))
+            .unwrap();
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].draft.title, "Mail");
+        assert_eq!(plan.items[0].draft.login_username(), Some("ada"));
     }
 
     #[test]
