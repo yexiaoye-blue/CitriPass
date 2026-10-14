@@ -5,6 +5,8 @@
 //!
 //! See <https://keepass.info/help/download/KDBX_XML.xsd> for an XML schema.
 
+mod unprotect;
+
 pub mod custom_serde;
 pub mod entry;
 pub mod group;
@@ -24,7 +26,8 @@ use crate::{
     crypt::ciphers::Cipher,
     db::{GroupId, Value},
     format::xml_db::{
-        custom_serde::cs_opt_string, entry::UnprotectError, group::Group, meta::Meta, timestamp::Timestamp,
+        custom_serde::cs_opt_string, entry::UnprotectError, group::Group, meta::Meta,
+        timestamp::Timestamp,
     },
 };
 #[cfg(feature = "save_kdbx4")]
@@ -35,7 +38,11 @@ pub fn parse_xml(
     header_attachments: &[Value<Vec<u8>>],
     inner_decryptor: &mut dyn Cipher,
 ) -> Result<crate::db::Database, ParseXmlError> {
-    let kdbx: KeePassFile = quick_xml::de::from_reader(data)?;
+    // Protected values use one continuous inner stream in file order. Serde then
+    // groups every `<String>` together and only afterwards visits `<History>`,
+    // so decrypt here before that regrouping can move the stream.
+    let data = unprotect::decrypt_protected_values(data, inner_decryptor)?;
+    let kdbx: KeePassFile = quick_xml::de::from_reader(data.as_slice())?;
     Ok(kdbx.xml_to_db(inner_decryptor, header_attachments)?)
 }
 
@@ -46,6 +53,18 @@ pub enum ParseXmlError {
     /// Errors related to XML deserialization or serialization.
     #[error("Error parsing XML inside KDBX: {0}")]
     Xml(#[from] quick_xml::DeError),
+
+    /// The inner XML could not be read while decrypting protected values.
+    #[error("Error reading protected XML: {0}")]
+    Read(#[from] quick_xml::Error),
+
+    /// The decrypted XML could not be written back before parsing.
+    #[error("Error rewriting protected XML: {0}")]
+    Rewrite(#[from] std::io::Error),
+
+    /// A protected element contained another element, so its ciphertext was not a single value.
+    #[error("protected XML value contains unexpected child elements")]
+    NestedProtectedValue,
 
     /// Errors related to unprotecting entries, such as decryption failures or unsupported
     /// encryption methods.
@@ -100,7 +119,8 @@ impl KeePassFile {
         inner_decryptor: &mut dyn Cipher,
         header_attachments: &[Value<Vec<u8>>],
     ) -> Result<crate::db::Database, UnprotectError> {
-        let mut db = crate::db::Database::new_with_root_id(GroupId::from_uuid(self.root.group.uuid.0));
+        let mut db =
+            crate::db::Database::new_with_root_id(GroupId::from_uuid(self.root.group.uuid.0));
 
         let mut attachments = HashMap::new();
 
@@ -162,9 +182,12 @@ impl KeePassFile {
             })
             .unwrap_or_default();
 
-        self.root
-            .group
-            .xml_to_db_handle(db.root_mut(), &attachments, &custom_icons, inner_decryptor)?;
+        self.root.group.xml_to_db_handle(
+            db.root_mut(),
+            &attachments,
+            &custom_icons,
+            inner_decryptor,
+        )?;
 
         db.attachments = attachments;
         db.custom_icons = custom_icons;
@@ -191,9 +214,12 @@ impl KeePassFile {
                 let history_len = entry.history.as_ref().map_or(0, |h| h.entries.len());
 
                 for i in 0..history_len {
-                    #[allow(clippy::indexing_slicing)] // We just checked that the index is in bounds
-                    if let Some(crate::db::Icon::Custom(icon_id)) =
-                        entry.history.as_ref().and_then(|h| h.entries[i].icon.as_ref())
+                    #[allow(clippy::indexing_slicing)]
+                    // We just checked that the index is in bounds
+                    if let Some(crate::db::Icon::Custom(icon_id)) = entry
+                        .history
+                        .as_ref()
+                        .and_then(|h| h.entries[i].icon.as_ref())
                     {
                         if let Some(icon) = db.custom_icons.get_mut(icon_id) {
                             icon.entries.insert((entry_id, Some(i)));
@@ -219,7 +245,10 @@ impl KeePassFile {
 
     /// Convert from database representation to XML representation.
     #[cfg(feature = "save_kdbx4")]
-    fn db_to_xml(db: &crate::db::Database, inner_cipher: &mut dyn Cipher) -> Result<Self, CryptographyError> {
+    fn db_to_xml(
+        db: &crate::db::Database,
+        inner_cipher: &mut dyn Cipher,
+    ) -> Result<Self, CryptographyError> {
         use crate::format::xml_db::meta::Icon;
 
         let group = Group::db_to_xml(db.root(), inner_cipher)?;
@@ -328,14 +357,18 @@ mod tests {
         let uuid: UUID = quick_xml::de::from_str(uuid_str).unwrap();
         assert_eq!(
             uuid.0.as_bytes(),
-            &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f]
+            &[
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+                0x0e, 0x0f
+            ]
         );
     }
 
     #[test]
     fn test_serialize_uuid() {
         let uuid = UUID(Uuid::from_bytes([
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
         ]));
         let serialized = quick_xml::se::to_string(&Test(uuid)).unwrap();
         assert_eq!(serialized, "<Test>AAECAwQFBgcICQoLDA0ODw==</Test>");
@@ -346,11 +379,13 @@ mod tests {
         let deleted_object = DeletedObject {
             uuid: UUID(Uuid::nil()),
             deletion_time: Some(Timestamp::new_iso8601(
-                chrono::NaiveDateTime::parse_from_str("2026-08-15T12:34:56", "%Y-%m-%dT%H:%M:%S").unwrap(),
+                chrono::NaiveDateTime::parse_from_str("2026-08-15T12:34:56", "%Y-%m-%dT%H:%M:%S")
+                    .unwrap(),
             )),
         };
 
-        let serialized = quick_xml::se::to_string_with_root("DeletedObject", &deleted_object).unwrap();
+        let serialized =
+            quick_xml::se::to_string_with_root("DeletedObject", &deleted_object).unwrap();
 
         assert!(serialized.contains("<DeletionTime>"));
         assert!(!serialized.contains("<deletion_time>"));
@@ -381,10 +416,55 @@ mod tests {
                </DeletedObjects>
             </Root>
         </KeePassFile>"#;
-        let mut cipher = crate::config::InnerCipherConfig::Plain.get_cipher(&[]).unwrap();
+        let mut cipher = crate::config::InnerCipherConfig::Plain
+            .get_cipher(&[])
+            .unwrap();
         let db = parse_xml(xml.as_bytes(), &[], &mut *cipher).unwrap();
         let kdbx = KeePassFile::db_to_xml(&db, &mut *cipher).unwrap();
-        let xml = quick_xml::se::to_string_with_root("DeletedObjects", &kdbx.root.deleted_objects).unwrap();
+        let xml = quick_xml::se::to_string_with_root("DeletedObjects", &kdbx.root.deleted_objects)
+            .unwrap();
         assert!(xml.contains("<DeletionTime>io8Y4g4AAAA=</DeletionTime>"));
+    }
+
+    #[test]
+    fn protected_values_between_history_keep_their_plaintext() {
+        use crate::crypt::ciphers::{Cipher, Salsa20Cipher};
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+
+        let password = "a&b<c";
+        let history = "history-secret";
+        let otp =
+            "otpauth://totp/Example:ada?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&period=30&digits=6";
+        let mut cipher = Salsa20Cipher::new(b"inner-stream-key").unwrap();
+        let password_xml = STANDARD.encode(cipher.decrypt(password.as_bytes()).unwrap());
+        let history_xml = STANDARD.encode(cipher.decrypt(history.as_bytes()).unwrap());
+        let otp_xml = STANDARD.encode(cipher.decrypt(otp.as_bytes()).unwrap());
+        let xml = format!(
+            r#"<KeePassFile><Meta></Meta><Root><Group><UUID>AAAAAAAAAAAAAAAAAAAAAA==</UUID><Name>R</Name>
+            <Entry><UUID>AQEBAQEBAQEBAQEBAQEBAQ==</UUID>
+            <String><Key>UserName</Key><Value>a&amp;b</Value></String>
+            <String><Key>Password</Key><Value Protected="True">{password_xml}</Value></String>
+            <History><Entry><UUID>AQEBAQEBAQEBAQEBAQEBAQ==</UUID>
+            <String><Key>Password</Key><Value Protected="True">{history_xml}</Value></String>
+            </Entry></History>
+            <String><Key>otp</Key><Value Protected="True">{otp_xml}</Value></String>
+            </Entry></Group></Root></KeePassFile>"#
+        );
+        let mut cipher = Salsa20Cipher::new(b"inner-stream-key").unwrap();
+        let db = parse_xml(xml.as_bytes(), &[], &mut cipher).unwrap();
+        let root = db.root();
+        let entry = root.entries().next().unwrap();
+        assert_eq!(entry.get_username(), Some("a&b"));
+        assert_eq!(entry.get_password(), Some(password));
+        assert_eq!(entry.get("otp"), Some(otp));
+        let historical = entry
+            .history
+            .as_ref()
+            .unwrap()
+            .get_entries()
+            .first()
+            .unwrap();
+        assert_eq!(historical.get_password(), Some(history));
     }
 }
