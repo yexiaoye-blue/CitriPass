@@ -88,6 +88,10 @@ pub struct MemoryTransaction<'a> {
 impl<'a> VaultStoreTransaction for MemoryTransaction<'a> {
     type Error = MemoryStoreError;
 
+    fn list_vault_ids(&self) -> Result<Vec<Uuid>, Self::Error> {
+        Ok(self.working.vaults.keys().copied().collect())
+    }
+
     fn load_vault(&self, vault_id: Uuid) -> Result<Option<VaultSnapshot>, Self::Error> {
         Ok(self.working.vaults.get(&vault_id).cloned())
     }
@@ -103,6 +107,20 @@ impl<'a> VaultStoreTransaction for MemoryTransaction<'a> {
         self.working
             .vaults
             .insert(vault_id, VaultSnapshot::new(header, Vec::new()));
+        Ok(())
+    }
+
+    fn update_vault_header(&mut self, header: SealedVault) -> Result<(), Self::Error> {
+        if !header.items().is_empty() {
+            return Err(MemoryStoreError::HeaderContainsItems);
+        }
+        let vault_id = header.vault_id();
+        let snapshot = self
+            .working
+            .vaults
+            .get_mut(&vault_id)
+            .ok_or(MemoryStoreError::VaultNotFound(vault_id))?;
+        snapshot.header = header;
         Ok(())
     }
 

@@ -151,6 +151,18 @@ pub struct SqliteTransaction<'connection> {
 impl<'connection> VaultStoreTransaction for SqliteTransaction<'connection> {
     type Error = SqliteStoreError;
 
+    fn list_vault_ids(&self) -> Result<Vec<Uuid>, Self::Error> {
+        let mut statement = self
+            .transaction
+            .prepare("SELECT vault_id FROM vaults ORDER BY vault_id")?;
+        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        rows.map(|row| {
+            row.map_err(SqliteStoreError::from)
+                .and_then(|bytes| parse_id(&bytes))
+        })
+        .collect()
+    }
+
     fn load_vault(&self, vault_id: Uuid) -> Result<Option<VaultSnapshot>, Self::Error> {
         let vault_bytes: Option<Vec<u8>> = self
             .transaction
@@ -211,6 +223,19 @@ impl<'connection> VaultStoreTransaction for SqliteTransaction<'connection> {
         }
         self.transaction.execute(
             "INSERT INTO vaults(vault_id, header_record) VALUES (?1, ?2)",
+            params![id_bytes(vault_id), header.to_bytes()?],
+        )?;
+        Ok(())
+    }
+
+    fn update_vault_header(&mut self, header: SealedVault) -> Result<(), Self::Error> {
+        if !header.items().is_empty() {
+            return Err(SqliteStoreError::HeaderContainsItems);
+        }
+        let vault_id = header.vault_id();
+        self.ensure_vault(vault_id)?;
+        self.transaction.execute(
+            "UPDATE vaults SET header_record = ?2 WHERE vault_id = ?1",
             params![id_bytes(vault_id), header.to_bytes()?],
         )?;
         Ok(())

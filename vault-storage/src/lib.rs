@@ -110,11 +110,17 @@ pub trait VaultStoreTransaction {
     /// Backend-specific failure type.
     type Error: StdError + Send + Sync + 'static;
 
+    /// List vault ids stored by this local database.
+    fn list_vault_ids(&self) -> Result<Vec<Uuid>, Self::Error>;
+
     /// Read a vault snapshot, if the vault exists.
     fn load_vault(&self, vault_id: Uuid) -> Result<Option<VaultSnapshot>, Self::Error>;
 
     /// Insert a new vault header.
     fn create_vault(&mut self, header: SealedVault) -> Result<(), Self::Error>;
+
+    /// Replace metadata for an existing vault without touching its items.
+    fn update_vault_header(&mut self, header: SealedVault) -> Result<(), Self::Error>;
 
     /// Apply an encrypted item and optional outbox operation atomically.
     fn apply_mutation(&mut self, mutation: StoreMutation) -> Result<(), Self::Error>;
