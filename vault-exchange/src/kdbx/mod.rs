@@ -132,6 +132,54 @@ mod tests {
     }
 
     #[test]
+    fn saved_kdbx_keeps_protected_totp_after_interleaved_history_and_keyfile() {
+        let password = format!("kdbx-{}", uuid::Uuid::new_v4());
+        let key_file = uuid::Uuid::new_v4().as_bytes().to_vec();
+        let current_password = uuid::Uuid::new_v4().to_string();
+        let historical_password = uuid::Uuid::new_v4().to_string();
+        let mut database = cheap_database();
+        {
+            let mut root = database.root_mut();
+            let mut entry = root.add_entry();
+            entry.set_unprotected(fields::TITLE, "Protected OTP");
+            entry.set_unprotected(fields::USERNAME, "ada");
+            entry.set_protected(fields::PASSWORD, &current_password);
+            {
+                let mut historical = entry.track_changes();
+                historical.set_protected(fields::PASSWORD, &historical_password);
+            }
+            entry.set_protected(fields::PASSWORD, &current_password);
+            entry.set_protected(
+                fields::OTP,
+                "otpauth://totp/Example?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8",
+            );
+        }
+
+        let bytes = save(&database, &password, Some(&key_file));
+        let plan = KdbxImporter
+            .import(&ImportSource::new(&bytes, &password).with_key_file(&key_file))
+            .unwrap();
+        let item = &plan.items[0];
+        match &item.draft.data {
+            vault_core::ItemData::Login {
+                username,
+                password,
+                otp: Some(vault_core::Otp::Totp(totp)),
+                ..
+            } => {
+                assert_eq!(username, "ada");
+                assert_eq!(password, &current_password);
+                assert_eq!(totp.digits, 8);
+            }
+            _ => panic!("expected a login with TOTP"),
+        }
+        assert!(plan
+            .skipped
+            .iter()
+            .any(|record| record.reason == crate::SkipReason::History));
+    }
+
+    #[test]
     fn truncated_bytes_are_rejected() {
         let error = KdbxImporter
             .import(&ImportSource::new(b"not a database", "secret"))
