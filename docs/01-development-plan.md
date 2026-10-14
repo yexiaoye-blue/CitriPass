@@ -54,7 +54,7 @@ CitriPass 面向个人用户，提供密码、私密笔记、支付卡、身份�
 
 - `vault-core`：数据模型、密钥、加密、序列化和版本迁移；
 - `vault-storage`：本地存储 SPI、事务、outbox 和 cursor 协议；
-- `vault-storage-sqlite`：SQLite、缓存和本地恢复适配器；
+- `vault-storage-sqlite`：SQLite、缓存、迁移和本地恢复适配器；
 - `sync-client`：游标、操作提交、冲突和重试；
 - `attachment-store`：本地文件、分块加密和断点续传；
 - `platform-security`：Keychain、Keystore、Credential Manager 等系统能力；

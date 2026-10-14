@@ -31,13 +31,15 @@ vault-core 不依赖 vault-storage。核心只产生和验证 SealedVault、Seal
 
 ## 3. 本地适配器
 
-后续 vault-storage-sqlite 实现 VaultStore，负责：
+vault-storage-sqlite 实现 VaultStore，负责：
 
 - SQLite schema 和迁移；
 - 本地事务；
 - 崩溃恢复；
 - items 与 sync_outbox 的同事务写入；
 - cursor 和设备本地状态。
+
+当前实现使用 bundled SQLite，测试覆盖文件重开、事务回滚、密文条目、outbox 和 cursor。生产接入仍需补充正式迁移策略、附件索引和平台文件权限配置。
 
 IndexedDB 可以实现同一组协议。SQLCipher 或系统磁盘加密属于本地文件保护层，不能替代 item-level AEAD。
 
