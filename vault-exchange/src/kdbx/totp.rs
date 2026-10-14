@@ -177,9 +177,7 @@ fn parse_algorithm(value: &str) -> Result<TotpAlgorithm, String> {
         "SHA1" | "HMACSHA1" => Ok(TotpAlgorithm::Sha1),
         "SHA256" | "HMACSHA256" => Ok(TotpAlgorithm::Sha256),
         "SHA512" | "HMACSHA512" => Ok(TotpAlgorithm::Sha512),
-        _ => Err(format!(
-            "one-time password algorithm `{value}` is not supported"
-        )),
+        _ => Err("one-time password algorithm is not supported".to_string()),
     }
 }
 
@@ -302,7 +300,10 @@ fn percent_decode(input: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(value) = u8::from_str_radix(&input[index + 1..index + 3], 16) {
+            if let (Some(high), Some(low)) =
+                (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
+            {
+                let value = (high << 4) | low;
                 out.push(value);
                 index += 3;
                 continue;
@@ -316,6 +317,15 @@ fn percent_decode(input: &str) -> String {
         index += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -364,6 +374,39 @@ mod tests {
         };
         assert_eq!(detail, "TOTP secret is shorter than 128 bits");
         assert!(!detail.contains("JBSWY3DPEHPK3PXP"));
+    }
+
+    #[test]
+    fn malformed_otpauth_and_unknown_algorithm_are_skipped_without_secrets() {
+        for raw in [
+            format!("otpauth://totp/Ada?secret={SECRET}&period=not-a-number"),
+            format!("otpauth://totp/Ada?secret={SECRET}&algorithm=MD5"),
+            "otpauth://totp/Ada".to_string(),
+        ] {
+            let db = entry_with(|entry| entry.set_unprotected(fields::OTP, raw));
+            let OtpDecision::Skipped { detail } = from_entry(&db.root().entries().next().unwrap())
+            else {
+                panic!("expected a skip");
+            };
+            assert!(!detail.is_empty());
+            assert!(!detail.contains(SECRET));
+        }
+    }
+
+    #[test]
+    fn malformed_percent_encoding_is_skipped_without_panicking() {
+        for suffix in ["%", "%0", "%GG", "%FF", "%€"] {
+            let raw = format!("otpauth://totp/Ada?secret={SECRET}{suffix}");
+            assert!(parse_otpauth(&raw).is_err());
+        }
+    }
+
+    #[test]
+    fn invalid_algorithm_does_not_echo_the_field_value() {
+        let value = uuid::Uuid::new_v4().to_string();
+        let error = parse_algorithm(&value).unwrap_err();
+        assert!(!error.contains(&value), "algorithm diagnostic leaked input");
+        assert!(parse_algorithm("MD5").is_err());
     }
 
     #[test]

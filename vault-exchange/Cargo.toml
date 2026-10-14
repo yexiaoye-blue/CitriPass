@@ -11,3 +11,8 @@ keepass = { version = "0.15", features = ["save_kdbx4"] }
 thiserror = "2"
 uuid = "1"
 vault-core = { path = "../vault-core" }
+
+# Local keepass 0.15.2. It decrypts protected strings in file order, including
+# when History sits between String fields, and enables quick-xml overlapped-lists.
+[patch.crates-io]
+keepass = { path = "third_party/keepass" }

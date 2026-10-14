@@ -1,0 +1,22 @@
+[package]
+name = "citri"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CitriPass local command-line host"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+thiserror = "2"
+uuid = "1"
+zeroize = { version = "1", features = ["derive"] }
+vault-core = { path = "../vault-core" }
+vault-exchange = { path = "../vault-exchange" }
+
+[dev-dependencies]
+keepass = { version = "0.15", features = ["save_kdbx4"] }
+# Same patched keepass as vault-exchange. Patches apply only from the package
+# being built, so the binary needs this even though the library also has it.
+[patch.crates-io]
+keepass = { path = "../vault-exchange/third_party/keepass" }

@@ -165,3 +165,27 @@ fn device_aad(vault_id: Uuid, device_id: Uuid) -> Vec<u8> {
     aad.extend_from_slice(device_id.as_bytes());
     aad
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_wrap_rejects_empty_truncated_and_wrong_version_inputs() {
+        let password = format!("device-test-{}", std::process::id());
+        let (vault, _) = UnlockedVault::create(&password).unwrap();
+        let key = DeviceKey::generate().unwrap();
+        let record = vault.wrap_for_device(&key, Uuid::from_u128(7)).unwrap();
+        let bytes = record.to_bytes().unwrap();
+
+        assert!(DeviceUnlock::from_bytes(&[]).is_err());
+        assert!(DeviceUnlock::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+
+        let mut wrong_version = bytes;
+        wrong_version[4..6].copy_from_slice(&2u16.to_be_bytes());
+        assert_eq!(
+            DeviceUnlock::from_bytes(&wrong_version).unwrap_err(),
+            Error::UnsupportedFormat
+        );
+    }
+}

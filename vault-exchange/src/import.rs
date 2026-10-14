@@ -6,7 +6,7 @@ use vault_core::ItemDraft;
 ///
 /// Extra credential kinds can be added without changing [`crate::Importer`].
 /// Adapters that do not understand a credential return [`crate::Error`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct ImportSource<'a> {
     /// Complete source file.
@@ -15,6 +15,16 @@ pub struct ImportSource<'a> {
     pub password: &'a str,
     /// Optional key file. The bytes are the file contents, not a path.
     pub key_file: Option<&'a [u8]>,
+}
+
+impl std::fmt::Debug for ImportSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportSource")
+            .field("bytes_len", &self.bytes.len())
+            .field("password", &"***")
+            .field("key_file_len", &self.key_file.map(|bytes| bytes.len()))
+            .finish()
+    }
 }
 
 impl<'a> ImportSource<'a> {
@@ -123,4 +133,23 @@ pub enum SkipReason {
     Otp,
     /// Plugin or custom data that has no item field.
     CustomData,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_debug_redacts_credentials_and_file_contents() {
+        let password = uuid::Uuid::new_v4().to_string();
+        let key = uuid::Uuid::new_v4().to_string();
+        let source = ImportSource::new(key.as_bytes(), &password).with_key_file(key.as_bytes());
+        let debug = format!("{source:?}");
+        assert!(!debug.contains(&password), "Debug leaked password");
+        assert!(!debug.contains(&key), "Debug leaked source or keyfile");
+        assert!(
+            !debug.contains(&format!("{:?}", key.as_bytes())),
+            "Debug leaked bytes"
+        );
+    }
 }
