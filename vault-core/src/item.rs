@@ -593,6 +593,110 @@ fn read_uuid(cursor: &mut Cursor<'_>) -> Result<Option<Uuid>> {
 mod tests {
     use super::*;
 
+    const SECRET: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+    fn roundtrip(data: ItemData) -> ItemDraft {
+        let mut draft = ItemDraft::new("Title", data);
+        draft.notes = "notes".into();
+        draft.folder_id = Some(Uuid::from_u128(9));
+        draft.favorite = true;
+        draft.tags = vec!["one".into(), "two".into()];
+        draft.custom_fields = vec![CustomField {
+            name: "custom".into(),
+            value: "value".into(),
+            concealed: true,
+        }];
+        draft.attachments = vec![AttachmentRef {
+            attachment_id: Uuid::from_u128(10),
+            revision: 2,
+            file_name: "file.txt".into(),
+            media_type: "text/plain".into(),
+        }];
+        let bytes = encode_body(&draft).unwrap();
+        let item = decode_body(&bytes, Uuid::from_u128(1), 1, false).unwrap();
+        assert_eq!(item.content, draft);
+        item.content
+    }
+
+    #[test]
+    fn schema_roundtrip_covers_every_item_data_variant() {
+        let login_password = format!("login-test-{}", std::process::id());
+        let login = roundtrip(ItemData::Login {
+            username: "user".into(),
+            password: login_password,
+            urls: vec!["https://example.test".into()],
+            otp: Some(Otp::Totp(Totp::new(SECRET))),
+        });
+        assert!(matches!(
+            login.data,
+            ItemData::Login {
+                otp: Some(Otp::Totp(_)),
+                ..
+            }
+        ));
+
+        assert!(matches!(
+            roundtrip(ItemData::SecureNote).data,
+            ItemData::SecureNote
+        ));
+        assert_eq!(
+            roundtrip(ItemData::Folder {
+                parent_id: Some(Uuid::from_u128(11)),
+            })
+            .data,
+            ItemData::Folder {
+                parent_id: Some(Uuid::from_u128(11)),
+            }
+        );
+
+        let mut totp = Totp::new(SECRET);
+        totp.algorithm = TotpAlgorithm::Sha256;
+        totp.digits = 8;
+        totp.period = 45;
+        assert_eq!(
+            roundtrip(ItemData::Totp { totp: totp.clone() }).data,
+            ItemData::Totp { totp }
+        );
+
+        let mut hotp = Hotp::new(SECRET, 7);
+        hotp.algorithm = TotpAlgorithm::Sha512;
+        hotp.digits = 7;
+        assert_eq!(
+            roundtrip(ItemData::Hotp { hotp: hotp.clone() }).data,
+            ItemData::Hotp { hotp }
+        );
+        assert_eq!(
+            roundtrip(ItemData::Card {
+                cardholder: "Ada".into(),
+                number: "4111111111111111".into(),
+                expiry: "2030-01".into(),
+                security_code: "123".into(),
+            })
+            .data,
+            ItemData::Card {
+                cardholder: "Ada".into(),
+                number: "4111111111111111".into(),
+                expiry: "2030-01".into(),
+                security_code: "123".into(),
+            }
+        );
+        assert_eq!(
+            roundtrip(ItemData::Identity {
+                full_name: "Ada Lovelace".into(),
+                email: "ada@example.test".into(),
+                phone: "+1 555 0100".into(),
+                address: "1 Example Street".into(),
+            })
+            .data,
+            ItemData::Identity {
+                full_name: "Ada Lovelace".into(),
+                email: "ada@example.test".into(),
+                phone: "+1 555 0100".into(),
+                address: "1 Example Street".into(),
+            }
+        );
+    }
+
     #[test]
     fn schema_roundtrip_keeps_login_fields() {
         let mut draft = ItemDraft::new(

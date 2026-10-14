@@ -25,6 +25,22 @@ fn header_omits_items_and_roundtrips() {
 }
 
 #[test]
+fn header_empty_truncated_and_version_inputs_are_rejected() {
+    let (vault, _) = sample();
+    let bytes = vault.header().to_bytes().unwrap();
+
+    assert!(SealedVault::from_bytes(&[]).is_err());
+    assert!(SealedVault::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+
+    let mut wrong_version = bytes;
+    wrong_version[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(
+        SealedVault::from_bytes(&wrong_version).unwrap_err(),
+        Error::UnsupportedFormat
+    );
+}
+
+#[test]
 fn wrong_password_is_unlock_failed() {
     let (vault, _) = sample();
     let header = vault.header();
@@ -47,6 +63,25 @@ fn changed_tombstone_does_not_decrypt() {
     assert_eq!(
         vault.import_item(&forged, Some(1)).unwrap_err(),
         Error::Integrity
+    );
+}
+
+#[test]
+fn item_empty_truncated_and_version_inputs_are_rejected() {
+    let (mut vault, _) = sample();
+    let item = vault
+        .create_item(ItemDraft::new("Note", ItemData::SecureNote))
+        .unwrap();
+    let bytes = vault.export_item(item.item_id).unwrap().to_bytes().unwrap();
+
+    assert!(SealedItem::from_bytes(&[]).is_err());
+    assert!(SealedItem::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+
+    let mut wrong_version = bytes;
+    wrong_version[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(
+        SealedItem::from_bytes(&wrong_version).unwrap_err(),
+        Error::UnsupportedFormat
     );
 }
 
@@ -110,6 +145,23 @@ fn backup_tag_rejects_tampering() {
 }
 
 #[test]
+fn backup_empty_truncated_and_version_inputs_are_rejected() {
+    let (vault, _) = sample();
+    let bytes = vault.backup().unwrap().to_bytes().unwrap();
+
+    assert!(SealedBackup::from_bytes(&[]).is_err());
+    let truncated = SealedBackup::from_bytes(&bytes[..bytes.len() - 1]).unwrap();
+    assert!(truncated.unlock("correct horse battery").is_err());
+
+    let mut wrong_version = bytes;
+    wrong_version[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(
+        SealedBackup::from_bytes(&wrong_version).unwrap_err(),
+        Error::UnsupportedFormat
+    );
+}
+
+#[test]
 fn attachment_roundtrip() {
     let (mut vault, _) = sample();
     let item = vault
@@ -122,6 +174,37 @@ fn attachment_roundtrip() {
     let mut reader = vault.open_attachment(&header).unwrap();
     assert_eq!(reader.decrypt_chunk(&chunk).unwrap().as_slice(), b"abc");
     reader.finish().unwrap();
+}
+
+#[test]
+fn attachment_descriptor_and_chunk_tampering_is_rejected() {
+    let (mut vault, _) = sample();
+    let item = vault
+        .create_item(ItemDraft::new("Note", ItemData::SecureNote))
+        .unwrap();
+    let mut writer = vault.begin_attachment(item.item_id, 1, 3).unwrap();
+    let mut chunk = writer.encrypt_chunk(b"abc").unwrap();
+    let header = writer.finish().unwrap();
+    let bytes = header.to_bytes().unwrap();
+
+    let mut wrong_version = bytes.clone();
+    wrong_version[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(
+        SealedAttachment::from_bytes(&wrong_version).unwrap_err(),
+        Error::UnsupportedFormat
+    );
+
+    let mut forged_header = bytes;
+    *forged_header.last_mut().unwrap() ^= 1;
+    let forged_header = SealedAttachment::from_bytes(&forged_header).unwrap();
+    assert!(matches!(
+        vault.open_attachment(&forged_header),
+        Err(Error::Integrity)
+    ));
+
+    chunk[0] ^= 1;
+    let mut reader = vault.open_attachment(&header).unwrap();
+    assert_eq!(reader.decrypt_chunk(&chunk).unwrap_err(), Error::Integrity);
 }
 
 #[test]

@@ -235,6 +235,21 @@ mod tests {
     }
 
     #[test]
+    fn rfc6238_sha256_and_sha512_at_59_seconds() {
+        let mut sha256 = Totp::new("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA");
+        sha256.algorithm = TotpAlgorithm::Sha256;
+        sha256.digits = 8;
+        assert_eq!(sha256.code_at(59).unwrap().as_str(), "46119246");
+
+        let mut sha512 = Totp::new(
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA",
+        );
+        sha512.algorithm = TotpAlgorithm::Sha512;
+        sha512.digits = 8;
+        assert_eq!(sha512.code_at(59).unwrap().as_str(), "90693936");
+    }
+
+    #[test]
     fn rfc4226_sha1_advances_the_counter() {
         let mut hotp = Hotp::new(SECRET, 0);
         assert_eq!(hotp.next_code().unwrap().as_str(), "755224");
@@ -246,6 +261,15 @@ mod tests {
     #[test]
     fn hotp_rejects_a_saturated_counter_without_moving_it() {
         let mut hotp = Hotp::new(SECRET, u64::MAX);
+        assert!(matches!(hotp.next_code(), Err(Error::LimitExceeded)));
+        assert_eq!(hotp.counter, u64::MAX);
+    }
+
+    #[test]
+    fn hotp_advances_to_the_saturated_counter_then_stops() {
+        let mut hotp = Hotp::new(SECRET, u64::MAX - 1);
+        hotp.next_code().unwrap();
+        assert_eq!(hotp.counter, u64::MAX);
         assert!(matches!(hotp.next_code(), Err(Error::LimitExceeded)));
         assert_eq!(hotp.counter, u64::MAX);
     }
