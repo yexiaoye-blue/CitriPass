@@ -241,7 +241,7 @@ fn read_body(mut reader: impl Read) -> Result<String, HttpSyncError> {
     String::from_utf8(buffer).map_err(|_| HttpSyncError::Service("malformed_record".into()))
 }
 
-/// sync-service encodes an empty list as JSON null.
+/// An empty result list may arrive as JSON null or as an empty array.
 fn empty_if_null<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,

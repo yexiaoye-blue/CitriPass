@@ -31,13 +31,13 @@
 - `POST /v1/vaults/{vault_id}/sync/push`
 - `GET /v1/vaults/{vault_id}/sync/pull?device_id=&cursor=`
 
-`record` 是 `SealedItem::to_bytes` 的标准 base64。`upsert_item` 和 `delete_item` 对应本地的 upsert 与 delete。服务把空的 `results` 编成 JSON `null`，客户端把它当成空列表。
+`record` 是 `SealedItem::to_bytes` 的标准 base64。`upsert_item` 和 `delete_item` 对应本地的 upsert 与 delete。客户端把空的 `results` 接受为 JSON `null` 或 `[]`。
 
 界面里的默认同步地址是 `http://127.0.0.1:18081`，可以改成别的 http 或 https 地址。地址不能带账号、密码、查询串或片段。
 
 ## 怎么跑验证
 
-先按 `docs/11-sync-service.md` 和 `sync-service/README.md` 准备 PostgreSQL，再让服务监听验证用的端口，避免占用另一个代理使用的 18080：
+先按 `docs/11-sync-service.md` 和 `sync-service/README.md` 准备 PostgreSQL，再让服务监听 `127.0.0.1:18081`：
 
 ```bash
 export DATABASE_URL=postgres://citripass:citripass@127.0.0.1:5432/citripass?sslmode=disable

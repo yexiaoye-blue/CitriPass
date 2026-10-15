@@ -103,7 +103,7 @@ export function App() {
         <aside className="spine">
           <h2>同步结果</h2>
           <p>
-            先在两边改同一条目标题，再分别点同步。先到的写入服务器，后到的保留服务器条目，并把本地内容另存为标题以「冲突」开头的新条目。
+            先在两边改同一条目标题，再分别点同步。先到的写入服务器，后到的保留服务器条目，并把本地内容另存为标题以「冲突 」开头的新条目。
           </p>
           <SyncLine label="设备 A" report={deviceA?.lastSync ?? null} />
           <SyncLine label="设备 B" report={deviceB?.lastSync ?? null} />
