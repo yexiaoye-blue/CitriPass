@@ -46,18 +46,13 @@ cd sync-service
 go run ./cmd/sync-service
 ```
 
-另开终端：
+另开终端。`cargo run` 使用已经构建好的页面，不会自动读取正在运行的开发服务器：
 
 ```bash
 cd ui-desktop
 npm install
-npm run dev
-```
-
-再开一个终端：
-
-```bash
-cd ui-desktop/src-tauri
+npm run build
+cd src-tauri
 cargo run
 ```
 
