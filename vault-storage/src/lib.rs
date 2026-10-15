@@ -13,7 +13,7 @@ mod memory;
 use std::error::Error as StdError;
 
 use uuid::Uuid;
-use vault_core::{SealedItem, SealedVault};
+use vault_core::{SealedAttachment, SealedItem, SealedVault};
 
 pub use memory::{MemoryStore, MemoryStoreError, MemoryTransaction};
 
@@ -39,6 +39,23 @@ impl VaultSnapshot {
     pub fn vault_id(&self) -> Uuid {
         self.header.vault_id()
     }
+}
+
+/// Encrypted attachment descriptor stored beside the owning vault.
+#[derive(Clone, Debug)]
+pub struct AttachmentRecord {
+    /// Vault that owns the attachment.
+    pub vault_id: Uuid,
+    /// Item that references the attachment.
+    pub item_id: Uuid,
+    /// Stable attachment id.
+    pub attachment_id: Uuid,
+    /// Attachment revision.
+    pub revision: u64,
+    /// Plaintext size authenticated by the descriptor.
+    pub size: u64,
+    /// Encrypted descriptor produced by vault-core.
+    pub descriptor: SealedAttachment,
 }
 
 /// Kind of an operation waiting for remote synchronization.
@@ -121,6 +138,20 @@ pub trait VaultStoreTransaction {
 
     /// Replace metadata for an existing vault without touching its items.
     fn update_vault_header(&mut self, header: SealedVault) -> Result<(), Self::Error>;
+
+    /// List descriptors for one item.
+    fn list_attachments(
+        &self,
+        vault_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Vec<AttachmentRecord>, Self::Error>;
+
+    /// Insert or replace one attachment descriptor.
+    fn put_attachment(&mut self, attachment: AttachmentRecord) -> Result<(), Self::Error>;
+
+    /// Delete one attachment descriptor. Repeating the operation is allowed.
+    fn delete_attachment(&mut self, vault_id: Uuid, attachment_id: Uuid)
+        -> Result<(), Self::Error>;
 
     /// Apply an encrypted item and optional outbox operation atomically.
     fn apply_mutation(&mut self, mutation: StoreMutation) -> Result<(), Self::Error>;

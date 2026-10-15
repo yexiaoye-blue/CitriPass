@@ -53,6 +53,17 @@ CREATE TABLE IF NOT EXISTS sync_cursor (
     cursor TEXT NOT NULL,
     FOREIGN KEY (vault_id) REFERENCES vaults(vault_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS attachments (
+    vault_id BLOB NOT NULL,
+    attachment_id BLOB NOT NULL,
+    item_id BLOB NOT NULL,
+    revision INTEGER NOT NULL,
+    size INTEGER NOT NULL,
+    descriptor_record BLOB NOT NULL,
+    PRIMARY KEY (vault_id, attachment_id),
+    FOREIGN KEY (vault_id) REFERENCES vaults(vault_id) ON DELETE CASCADE
+);
 "#;
 
 /// SQLite adapter failures.
@@ -100,6 +111,9 @@ pub enum SqliteStoreError {
     /// A numeric value cannot be represented by SQLite INTEGER.
     #[error("numeric value is outside SQLite INTEGER range")]
     NumericOverflow,
+    /// An attachment descriptor does not match its indexed identity.
+    #[error("attachment descriptor identity does not match its record")]
+    AttachmentIdentityMismatch,
 }
 
 /// Durable SQLite implementation of the vault-storage SPI.
@@ -237,6 +251,100 @@ impl<'connection> VaultStoreTransaction for SqliteTransaction<'connection> {
         self.transaction.execute(
             "UPDATE vaults SET header_record = ?2 WHERE vault_id = ?1",
             params![id_bytes(vault_id), header.to_bytes()?],
+        )?;
+        Ok(())
+    }
+
+    fn list_attachments(
+        &self,
+        vault_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Vec<vault_storage::AttachmentRecord>, Self::Error> {
+        self.ensure_vault(vault_id)?;
+        let mut statement = self.transaction.prepare(
+            "SELECT attachment_id, revision, size, descriptor_record
+             FROM attachments WHERE vault_id = ?1 AND item_id = ?2 ORDER BY attachment_id",
+        )?;
+        let rows = statement.query_map(params![id_bytes(vault_id), id_bytes(item_id)], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })?;
+        let mut records = Vec::new();
+        for row in rows {
+            let (attachment_id, revision, size, descriptor_record) = row?;
+            let attachment_id = parse_id(&attachment_id)?;
+            let descriptor = vault_core::SealedAttachment::from_bytes(&descriptor_record)?;
+            let revision = u64_value(revision)?;
+            let size = u64_value(size)?;
+            if descriptor.vault_id() != vault_id
+                || descriptor.item_id() != item_id
+                || descriptor.attachment_id() != attachment_id
+                || descriptor.revision() != revision
+                || descriptor.size() != size
+            {
+                return Err(SqliteStoreError::CorruptRecord(
+                    "attachment index columns do not match the descriptor".to_string(),
+                ));
+            }
+            records.push(vault_storage::AttachmentRecord {
+                vault_id,
+                item_id,
+                attachment_id,
+                revision,
+                size,
+                descriptor,
+            });
+        }
+        Ok(records)
+    }
+
+    fn put_attachment(
+        &mut self,
+        attachment: vault_storage::AttachmentRecord,
+    ) -> Result<(), Self::Error> {
+        self.ensure_vault(attachment.vault_id)?;
+        if attachment.descriptor.vault_id() != attachment.vault_id
+            || attachment.descriptor.item_id() != attachment.item_id
+            || attachment.descriptor.attachment_id() != attachment.attachment_id
+            || attachment.descriptor.revision() != attachment.revision
+            || attachment.descriptor.size() != attachment.size
+        {
+            return Err(SqliteStoreError::AttachmentIdentityMismatch);
+        }
+        self.transaction.execute(
+            "INSERT INTO attachments(
+                 vault_id, attachment_id, item_id, revision, size, descriptor_record
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(vault_id, attachment_id) DO UPDATE SET
+                 item_id = excluded.item_id,
+                 revision = excluded.revision,
+                 size = excluded.size,
+                 descriptor_record = excluded.descriptor_record",
+            params![
+                id_bytes(attachment.vault_id),
+                id_bytes(attachment.attachment_id),
+                id_bytes(attachment.item_id),
+                i64_value(attachment.revision)?,
+                i64_value(attachment.size)?,
+                attachment.descriptor.to_bytes()?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn delete_attachment(
+        &mut self,
+        vault_id: Uuid,
+        attachment_id: Uuid,
+    ) -> Result<(), Self::Error> {
+        self.ensure_vault(vault_id)?;
+        self.transaction.execute(
+            "DELETE FROM attachments WHERE vault_id = ?1 AND attachment_id = ?2",
+            params![id_bytes(vault_id), id_bytes(attachment_id)],
         )?;
         Ok(())
     }
@@ -654,5 +762,50 @@ mod tests {
 
         let transaction = store.begin().unwrap();
         assert!(transaction.load_vault(vault_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn attachment_index_roundtrips_and_deletes() {
+        let password = format!("sqlite-attachment-test-{}", std::process::id());
+        let (mut vault, _) = UnlockedVault::create(&password).unwrap();
+        let item = vault
+            .create_item(ItemDraft::new("Attachment", ItemData::SecureNote))
+            .unwrap();
+        let mut writer = vault.begin_attachment(item.item_id, 1, 3).unwrap();
+        writer.encrypt_chunk(b"abc").unwrap();
+        let descriptor = writer.finish().unwrap();
+        let header = vault.header();
+        let vault_id = header.vault_id();
+        let record = vault_storage::AttachmentRecord {
+            vault_id,
+            item_id: item.item_id,
+            attachment_id: descriptor.attachment_id(),
+            revision: descriptor.revision(),
+            size: descriptor.size(),
+            descriptor,
+        };
+
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut transaction = store.begin().unwrap();
+        transaction.create_vault(header).unwrap();
+        transaction.put_attachment(record.clone()).unwrap();
+        transaction.commit().unwrap();
+
+        let mut transaction = store.begin().unwrap();
+        let attachments = transaction
+            .list_attachments(vault_id, item.item_id)
+            .unwrap();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].attachment_id, record.attachment_id);
+        transaction
+            .delete_attachment(vault_id, record.attachment_id)
+            .unwrap();
+        transaction.commit().unwrap();
+
+        let transaction = store.begin().unwrap();
+        assert!(transaction
+            .list_attachments(vault_id, item.item_id)
+            .unwrap()
+            .is_empty());
     }
 }
