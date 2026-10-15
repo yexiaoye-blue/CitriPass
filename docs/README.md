@@ -13,7 +13,7 @@ CitriPass 是一个本地优先、端到端加密、支持可选云端同步的�
 - [测试与发布](./07-testing-and-release.md)：测试门禁、审计准备和发布流程
 - [路线图](./08-roadmap.md)：从概念验证到公开版本的里程碑
 - [核心审查与性能记录](./09-vault-core-review.md)：vault-core 修复、基线、内存测量与验证边界
-- [存储协议层](./10-storage-protocol.md)：本地存储 SPI、事务边界和远端同步分层
+- [存储协议层](./10-storage-protocol.md)：客户端协议、驱动端口，以及不要另起一层的边界
 - [架构决策记录](./adr/README.md)：需要长期保持的关键技术决策
 
 ## 当前架构结论

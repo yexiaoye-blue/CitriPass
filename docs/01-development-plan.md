@@ -56,8 +56,7 @@ CitriPass 面向个人用户，提供密码、私密笔记、支付卡、身份�
 - `vault-storage`：桌面、Web 和移动端调用的本地保险库协议；
 - `vault-storage-sqlite`：SQLite 驱动，只保存密文、版本和同步元数据；
 - `vault-attachment-store`：附件密文分块文件驱动；
-- `sync-client`：游标、操作提交、冲突和重试；
-- `attachment-store`：本地文件、分块加密和断点续传；
+- `sync-client`：以后的远端传输。复用 outbox 和 cursor，不替换 `vault-storage`；
 - `platform-security`：Keychain、Keystore、Credential Manager 等系统能力；
 - `ui-web`：React Web Vault；
 - `ui-extension`：TypeScript 浏览器扩展；

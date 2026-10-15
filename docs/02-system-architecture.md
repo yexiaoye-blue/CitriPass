@@ -8,20 +8,22 @@ flowchart LR
     EXT[TypeScript Extension]
     DESK[Tauri Desktop]
     MOB[Flutter Mobile]
+    STORAGE[vault-storage\nVaultSession]
     CORE[Vault Core\n密钥、加密、条目模型]
-    LOCAL[Local Store\n加密 SQLite]
-    ATT[Attachment Store\n加密文件/分块]
+    LOCAL[SQLite 驱动\n密文与同步元数据]
+    ATT[附件驱动\n密文分块]
     SYNC[Sync Client\n游标、重试、冲突]
     API[Sync API]
     DB[(PostgreSQL\n密文与版本)]
     OBJ[(S3\n加密附件)]
 
-    WEB --> CORE
-    EXT --> CORE
-    DESK --> CORE
-    MOB --> CORE
-    CORE --> LOCAL
-    CORE --> ATT
+    WEB --> STORAGE
+    EXT --> STORAGE
+    DESK --> STORAGE
+    MOB --> STORAGE
+    STORAGE --> CORE
+    STORAGE --> LOCAL
+    STORAGE --> ATT
     LOCAL --> SYNC
     ATT --> SYNC
     SYNC --> API
@@ -31,36 +33,33 @@ flowchart LR
 
 ### 核心与适配器的源码依赖
 
-上图描述逻辑组件间的数据流。源码依赖遵循另一条约束：宿主和存储/同步/平台适配器依赖 `vault-core`，核心不依赖这些适配器。
+上图描述数据流。源码依赖是另一条约束：客户端调用 `vault-storage`，具体驱动只在组合根创建。`vault-core` 不依赖存储、文件或网络。见 [ADR-007](./adr/007-clients-use-vault-storage.md)。
 
 ```mermaid
 flowchart LR
-    HOST[客户端宿主 / WASM与FFI边界] --> CORE[Vault Core]
-    HOST --> STORE[本地存储适配器]
-    HOST --> PLATFORM[平台安全存储适配器]
-    HOST --> SYNC[同步适配器]
-    STORE --> CORE
-    PLATFORM --> CORE
-    SYNC --> CORE
+    HOST[桌面 / Web / 移动端] --> STORAGE[vault-storage]
+    STORAGE --> CORE[vault-core]
+    SQLITE[vault-storage-sqlite] --> STORAGE
+    FILES[vault-attachment-store] --> STORAGE
 ```
 
-核心只返回领域对象、密文记录、设备包装和附件会话。数据库事务、outbox/cursor 原子提交、网络重试、设备用户认证、附件文件 I/O 和锁定事件后的会话销毁由宿主及适配器负责。JSON 格式是核心的版本化交换契约，不是运行时数据库；不能把备份接口当作逐条存储接口。
+`VaultSession` 负责解锁、条目提交、outbox，以及附件分块和描述符的提交顺序。SQLite 驱动和附件驱动只保存密文。网络重试、系统密钥库和界面锁定仍由对应的宿主或后续适配器负责，但不能各自再写一套存储提交规则。
 
 ## 2. 数据流
 
 ### 创建或修改条目
 
 1. 用户在客户端输入内容。
-2. 客户端使用 Vault Key 加密内容。
-3. 本地数据库在一个事务中写入密文、revision 和 outbox 记录。
+2. `VaultSession` 调用 `vault-core`，用 Vault Key 加密内容。
+3. 同一个本地事务写入密文、revision 和 outbox 记录。
 4. 有同步配置时，后台任务提交 outbox 中的变更。
 5. 服务端校验设备权限并保存密文，不解析 payload。
 
 ### 读取条目
 
-1. 客户端读取本地密文。
-2. 设备处于解锁状态时取出 Vault Key。
-3. 客户端解密并在内存中展示。
+1. `VaultSession` 从本地驱动读取密文。
+2. 解锁状态中的 Vault Key 解密条目。
+3. 客户端只在内存中展示明文。
 4. 锁定、切后台或超时后销毁解锁状态和临时明文。
 
 ## 3. 存储模式
@@ -98,7 +97,7 @@ flowchart LR
 - Web 和扩展通过 WASM 调用 `vault-core`；
 - Tauri 直接调用 Rust 核心；
 - Flutter 通过 FFI 调用 Rust 核心；
-- 各平台分别接入本地安全存储和本地数据库。
+- 各平台的组合根选择本地驱动，业务代码只使用 `vault-storage`。
 
 ## 6. 可替换点
 

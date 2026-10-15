@@ -13,3 +13,7 @@ the protocol.
 Remote synchronization is still a separate boundary. It can reuse the
 encrypted records, operation ids, revisions, tombstones, and cursors stored
 here, but it does not replace this protocol.
+
+Hosts construct a driver at the composition root and pass it to `VaultSession`.
+Product code uses the methods that commit themselves. `vault_mut` followed by
+`save` exists for the command-line test host and is not a second protocol.

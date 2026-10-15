@@ -5,3 +5,4 @@
 - [ADR-004：首期采用完整跨端技术栈](./004-full-initial-stack.md)
 - [ADR-005：主密码轮换与恢复密钥](./005-master-password-rotation-and-recovery-key.md)
 - [ADR-006：核心领域模型、独立密文和附件边界](./006-vault-core-domain-and-storage-boundary.md)
+- [ADR-007：客户端只依赖 vault-storage](./007-clients-use-vault-storage.md)

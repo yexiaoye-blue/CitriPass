@@ -4,7 +4,9 @@
 
 vault-storage 是 CitriPass 客户端使用的本地保险库协议，边界类似 JDBC。桌面、Web 和移动端调用 `VaultSession`，不直接调用 SQLite 或附件文件。命令行只是这个协议的测试宿主。
 
-协议层不访问 SQLite、文件系统、HTTP、操作系统密钥库或异步运行时。加密和解密仍由 vault-core 完成。SQLite 和附件分块只作为驱动，只看见密文。
+这条边界记录在 [ADR-007](./adr/007-clients-use-vault-storage.md)。不要再增加 `vault-local`，也不要恢复第二个名为 `attachment-store` 的包。`vault-attachment-store` 就是附件驱动。
+
+协议层不访问 SQLite、文件系统、HTTP、操作系统密钥库或异步运行时。加密和解密仍由 vault-core 完成。驱动只看见密文。
 
 依赖方向保持为：
 
@@ -15,6 +17,8 @@ vault-core <- vault-storage <- vault-attachment-store
 
 vault-core 不依赖 vault-storage。核心只产生和验证 SealedVault、SealedItem 等密文记录；存储适配器负责保存这些记录。
 
+宿主只在组合根创建 `SqliteStore` 或以后的 IndexedDB 驱动，以及附件驱动，然后交给 `VaultSession`。
+
 ## 2. 协议职责
 
 客户端协议负责：
@@ -23,6 +27,8 @@ vault-core 不依赖 vault-storage。核心只产生和验证 SealedVault、Seal
 - 逐条提交条目修改，并在同一事务里写入对应的 outbox 操作；
 - 附件分块全部完成后再提交描述符和条目引用；提交失败时删除已发布的密文分块；
 - 删除附件时先提交索引和条目，再删除密文文件。
+
+产品客户端使用这些会自行提交的操作。`vault_mut` 后再 `save` 只留给 `citri` 这种测试宿主做一批修改，例如导入。不要把这种用法复制到桌面、Web 或移动端。
 
 驱动端口保留这些记录和能力：
 
@@ -69,3 +75,12 @@ vault-sync-http     HTTP 同步实现
 ## 5. 当前限制
 
 本协议暂不定义 HTTP 请求格式或冲突合并策略。SQLite schema 由 vault-storage-sqlite 负责，附件分块文件由 vault-attachment-store 负责。客户端不直接选择这些驱动的内部表或目录布局。
+
+这些能力还不属于本协议，也不要塞进驱动端口：
+
+- 自动锁定和系统密钥库；
+- IndexedDB 与 SQLCipher；
+- 远端 push、pull 和冲突处理；
+- 界面、浏览器填充和服务端。
+
+同步传输以后读取这里已经保存的 outbox、revision 和 cursor。界面继续调用 `VaultSession`。
