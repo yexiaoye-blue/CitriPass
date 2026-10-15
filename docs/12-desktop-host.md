@@ -1,12 +1,12 @@
 # 桌面验证宿主
 
-这是一个验证程序，不是完成的密码管理器。它用来确认桌面端可以按 ADR-007 把两台设备接到同一个保险库，创建笔记、登录条目和验证码，生成密码，锁定后再解锁，并通过 sync-service 同步条目。自动锁定、系统密钥库和附件上传还不在这里。
+这是一个验证程序，放在 `verification/desktop-host`，不是完成的密码管理器，也不占用方案里的正式桌面模块 `ui-desktop`。它用来确认桌面端可以按 ADR-007 把两台设备接到同一个保险库，创建笔记、登录条目和验证码，生成密码，锁定后再解锁，并通过 sync-service 同步条目。自动锁定、系统密钥库和附件上传还不在这里。
 
 ## 宿主是什么
 
 界面只调用 Tauri 命令。命令只调用 `VaultSession`。SQLite 和附件目录在组合根里创建，然后交给会话。界面不写 SQL，也不重做加密。
 
-组合根在 `ui-desktop/src-tauri/src/host.rs`：
+组合根在 `verification/desktop-host/src-tauri/src/host.rs`：
 
 - 设备 A：`device-a.sqlite`，附件根目录 `device-a-attachments`。
 - 设备 B：`device-b.sqlite`，附件根目录 `device-b-attachments`。
@@ -49,7 +49,7 @@ go run ./cmd/sync-service
 另开终端。`cargo run` 使用已经构建好的页面，不会自动读取正在运行的开发服务器：
 
 ```bash
-cd ui-desktop
+cd verification/desktop-host
 npm install
 npm run build
 cd src-tauri
@@ -71,6 +71,6 @@ cargo run
 以下是这次在本工作区里跑过的结果，不是预先假定的。
 
 - `vault-sync` 的 `cargo test -- --test-threads=1`：7 个库内测试通过，约 9.36 秒；集成测试 `http_transport_syncs_two_sqlite_devices_and_reports_a_conflict` 通过，约 47.33 秒。集成测试启动容器 `citripass-sync-pg-desktop`，镜像 `docker.io/library/postgres:16-alpine`，宿主机端口 54330，并运行本工作区里未修改的 sync-service，监听 `127.0.0.1:18081`。测试结束时删除该容器。
-- `ui-desktop` 的 `npm run typecheck` 通过。`npm run build` 通过。
-- `ui-desktop/src-tauri` 的 `cargo build` 通过，生成了开发构建。本机有 WebKitGTK 4.1。没有启动图形窗口，所以不能把界面操作写成已经人工点过。
+- `verification/desktop-host` 的 `npm run typecheck` 通过。`npm run build` 通过。
+- `verification/desktop-host/src-tauri` 的 `cargo build` 通过，生成了开发构建。本机有 WebKitGTK 4.1。没有启动图形窗口，所以不能把界面操作写成已经人工点过。
 
