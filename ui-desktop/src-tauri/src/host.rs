@@ -11,7 +11,7 @@ use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 use vault_attachment_store::FileAttachmentStore;
-use vault_core::{Item, ItemData, ItemDraft, SealedVault};
+use vault_core::{Item, ItemData, ItemDraft, LoginDraft, SealedVault};
 use vault_storage::{SessionError, VaultSession, VaultStore, VaultStoreTransaction};
 use vault_storage_sqlite::{SqliteStore, SqliteStoreError};
 use vault_sync::{sync_items, HttpSyncError, HttpSyncTransport, SyncReport};
@@ -63,6 +63,8 @@ pub(crate) enum HostError {
     MissingVault,
     #[error("先解锁这台设备")]
     Locked,
+    #[error("这台设备没有处于解锁状态")]
+    NotUnlocked,
     #[error("先在设备 A 创建并解锁，再把保险库头写到设备 B")]
     PeerNotReady,
     #[error("设备 B 已经有保险库，直接解锁")]
@@ -112,6 +114,9 @@ pub(crate) struct ItemView {
     pub(crate) revision: u64,
     pub(crate) deleted: bool,
     pub(crate) conflict_copy: bool,
+    pub(crate) notes: String,
+    pub(crate) username: Option<String>,
+    pub(crate) password: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -122,6 +127,14 @@ pub(crate) struct SyncView {
     pub(crate) conflicts: usize,
     pub(crate) pulled: usize,
     pub(crate) cursor: String,
+}
+
+/// Vault creation result. The recovery key is not kept by the host.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreatedVault {
+    pub(crate) status: HostStatus,
+    pub(crate) recovery_key: String,
 }
 
 impl HostInner {
@@ -144,7 +157,10 @@ impl HostInner {
         })
     }
 
-    pub(crate) fn create_device_a(&mut self, password: &str) -> Result<HostStatus, HostError> {
+    pub(crate) fn create_device_a_with_recovery(
+        &mut self,
+        password: &str,
+    ) -> Result<CreatedVault, HostError> {
         if inspect_has_vault(&mut self.a)? {
             return Err(HostError::AlreadyCreated);
         }
@@ -152,15 +168,19 @@ impl HostInner {
         let store = take_locked(&mut self.a)?;
         match VaultSession::create(store, password) {
             Ok((session, recovery)) => {
+                let recovery_key = recovery.to_text().to_string();
                 drop(recovery);
                 self.a.phase = Phase::Unlocked(session);
+                Ok(CreatedVault {
+                    status: self.status()?,
+                    recovery_key,
+                })
             }
             Err(error) => {
                 self.a.phase = Phase::Locked(reopen(&database)?);
-                return Err(session_err(error));
+                Err(session_err(error))
             }
         }
-        self.status()
     }
 
     pub(crate) fn unlock(
@@ -217,6 +237,20 @@ impl HostInner {
         self.status()
     }
 
+    pub(crate) fn lock_device(&mut self, device: DeviceId) -> Result<HostStatus, HostError> {
+        let slot = self.slot_mut(device);
+        match std::mem::replace(&mut slot.phase, Phase::Closed) {
+            Phase::Unlocked(session) => {
+                slot.phase = Phase::Locked(session.into_store());
+            }
+            other => {
+                slot.phase = other;
+                return Err(HostError::NotUnlocked);
+            }
+        }
+        self.status()
+    }
+
     pub(crate) fn create_note(
         &mut self,
         device: DeviceId,
@@ -231,6 +265,83 @@ impl HostInner {
         draft.notes = notes.to_string();
         with_session(self.slot_mut(device), |session| {
             session.create_item(draft).map_err(session_err)?;
+            Ok(())
+        })?;
+        self.status()
+    }
+
+    pub(crate) fn create_login(
+        &mut self,
+        device: DeviceId,
+        title: &str,
+        username: &str,
+        password: &str,
+        notes: &str,
+    ) -> Result<HostStatus, HostError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(HostError::EmptyTitle);
+        }
+        let draft = LoginDraft {
+            title: title.to_string(),
+            username: username.to_string(),
+            password: password.to_string(),
+            notes: notes.to_string(),
+        };
+        with_session(self.slot_mut(device), |session| {
+            session.create_login(draft).map_err(session_err)?;
+            Ok(())
+        })?;
+        self.status()
+    }
+
+    pub(crate) fn update_note(
+        &mut self,
+        device: DeviceId,
+        item_id: Uuid,
+        title: &str,
+        notes: &str,
+    ) -> Result<HostStatus, HostError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(HostError::EmptyTitle);
+        }
+        with_session(self.slot_mut(device), |session| {
+            let current = session.get_item(item_id).map_err(session_err)?;
+            let mut draft = current.content.clone();
+            draft.title = title.to_string();
+            draft.notes = notes.to_string();
+            session.update_item(item_id, draft).map_err(session_err)?;
+            Ok(())
+        })?;
+        self.status()
+    }
+
+    pub(crate) fn update_login(
+        &mut self,
+        device: DeviceId,
+        item_id: Uuid,
+        title: &str,
+        username: &str,
+        password: &str,
+        notes: &str,
+    ) -> Result<HostStatus, HostError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(HostError::EmptyTitle);
+        }
+        with_session(self.slot_mut(device), |session| {
+            session
+                .update_login(
+                    item_id,
+                    LoginDraft {
+                        title: title.to_string(),
+                        username: username.to_string(),
+                        password: password.to_string(),
+                        notes: notes.to_string(),
+                    },
+                )
+                .map_err(session_err)?;
             Ok(())
         })?;
         self.status()
@@ -371,6 +482,9 @@ fn item_view(item: Item) -> ItemView {
         revision: item.revision,
         deleted: item.deleted,
         conflict_copy,
+        notes: item.content.notes.clone(),
+        username: item.login_username().map(ToOwned::to_owned),
+        password: item.login_password().map(ToOwned::to_owned),
     }
 }
 

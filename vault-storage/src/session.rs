@@ -10,8 +10,8 @@ use std::error::Error as StdError;
 use thiserror::Error;
 use uuid::Uuid;
 use vault_core::{
-    AttachmentRef, Item, ItemDraft, RecoveryKey, SealedItem, SealedVault, UnlockedVault,
-    ATTACHMENT_CHUNK_SIZE,
+    AttachmentRef, Item, ItemDraft, LoginDraft, RecoveryKey, SealedItem, SealedVault,
+    UnlockedVault, ATTACHMENT_CHUNK_SIZE,
 };
 
 use crate::{
@@ -245,6 +245,35 @@ impl<S: VaultStore> VaultSession<S> {
         let item = self.vault.create_item(draft)?;
         self.save()?;
         Ok(self.vault.get_item(item.item_id)?)
+    }
+
+    /// Encrypt a login and commit it with an outbox operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the draft is invalid or the commit fails.
+    pub fn create_login(&mut self, draft: LoginDraft) -> Result<Item, SessionError<S::Error>> {
+        let item = self.vault.create_login(draft)?;
+        self.save()?;
+        Ok(self.vault.get_item(item.item_id)?)
+    }
+
+    /// Replace a login's title, username, password, and notes, then commit.
+    ///
+    /// URLs and one-time password material already stored on the login stay in
+    /// place. Other item kinds are rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item is absent, not a login, or the commit fails.
+    pub fn update_login(
+        &mut self,
+        item_id: Uuid,
+        draft: LoginDraft,
+    ) -> Result<Item, SessionError<S::Error>> {
+        self.vault.update_login(item_id, draft)?;
+        self.save()?;
+        Ok(self.vault.get_item(item_id)?)
     }
 
     /// Replace an item and commit the new record with an outbox operation.
@@ -901,6 +930,43 @@ mod tests {
                 .map(|operation| operation.kind),
             Some(OperationKind::UpsertItem)
         );
+    }
+
+    #[test]
+    fn login_changes_survive_reopen_without_exposing_the_recovery_key() {
+        let password = password();
+        let (mut session, recovery) = VaultSession::create(MemoryStore::new(), &password).unwrap();
+        let recovery_text = recovery.to_text();
+        assert!(!recovery_text.trim().is_empty());
+        let item = session
+            .create_login(LoginDraft {
+                title: "Mail".to_string(),
+                username: "a@b.c".to_string(),
+                password: "secret".to_string(),
+                notes: "desk".to_string(),
+            })
+            .unwrap();
+        assert_eq!(item.login_username(), Some("a@b.c"));
+        assert_eq!(item.login_password(), Some("secret"));
+
+        session
+            .update_login(
+                item.item_id,
+                LoginDraft {
+                    title: "Mail".to_string(),
+                    username: "c@d.e".to_string(),
+                    password: "next".to_string(),
+                    notes: "desk".to_string(),
+                },
+            )
+            .unwrap();
+        let store = session.into_store();
+        let mut session = VaultSession::open(store, &password).unwrap();
+        let item = session.get_item(item.item_id).unwrap();
+        assert_eq!(item.login_username(), Some("c@d.e"));
+        assert_eq!(item.login_password(), Some("next"));
+        assert_eq!(item.notes, "desk");
+        assert_eq!(session.pending_operations().unwrap().len(), 2);
     }
 
     #[test]

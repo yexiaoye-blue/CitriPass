@@ -214,6 +214,44 @@ button:disabled {
   color: var(--peel-ink);
 }
 
+.recovery {
+  margin: 20px 0 0;
+  padding: 16px 18px 18px;
+  border-radius: 8px;
+  background: var(--peel);
+  color: var(--peel-ink);
+}
+
+.recovery h2,
+.recovery p {
+  margin-top: 0;
+}
+
+.recovery-key {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--sheet);
+  color: var(--ink);
+  font-family: "Noto Sans Mono", ui-monospace, monospace;
+  letter-spacing: 0.04em;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.kind {
+  display: flex;
+  gap: 16px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+
+.kind legend {
+  padding: 0;
+  margin-bottom: 8px;
+}
+
 table {
   width: 100%;
   margin-top: 16px;

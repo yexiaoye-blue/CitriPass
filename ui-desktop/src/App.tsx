@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import {
   createDeviceA,
+  createLogin,
   createNote,
   errorText,
   hostStatus,
   inDesktopHost,
+  lockDevice,
   provisionDeviceB,
-  renameItem,
   syncDevice,
+  updateLogin,
+  updateNote,
   unlockDevice,
   type DeviceView,
   type HostStatus,
@@ -23,6 +26,7 @@ export function App() {
   const [endpoint, setEndpoint] = useState(DEFAULT_ENDPOINT);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (!desktop) {
@@ -65,8 +69,18 @@ export function App() {
       <header className="mast">
         <h1>同一本保险库，两台设备</h1>
         <p className="lede">
-          这是桌面验证宿主，用来检查创建、解锁、笔记和条目同步。它不是完整的密码管理器。主密码只参与这一次操作，界面随后清掉，也不会写入数据库或日志。
+          这是桌面验证宿主。可以创建保险库、锁定后再解锁、写笔记和登录条目，并在两台设备之间同步。它还不是完整的密码管理器。主密码只参与这一次操作，界面随后清掉。
         </p>
+        {recoveryKey ? (
+          <section className="recovery" aria-labelledby="recovery-title">
+            <h2 id="recovery-title">恢复密钥只显示这一次</h2>
+            <p>写下来或复制到你自己保管的地方。关掉这张提示后，宿主不再保存它。</p>
+            <p className="recovery-key">{recoveryKey}</p>
+            <button type="button" onClick={() => setRecoveryKey(null)}>
+              我已记下
+            </button>
+          </section>
+        ) : null}
         <label className="endpoint">
           同步服务
           <input
@@ -99,6 +113,7 @@ export function App() {
           busy={busy || !desktop}
           peerReady
           onRun={run}
+          onRecovery={setRecoveryKey}
         />
         <aside className="spine">
           <h2>同步结果</h2>
@@ -116,6 +131,7 @@ export function App() {
           busy={busy || !desktop}
           peerReady={deviceA?.phase === "unlocked"}
           onRun={run}
+          onRecovery={setRecoveryKey}
         />
       </div>
     </main>
@@ -145,6 +161,7 @@ function DevicePane({
   busy,
   peerReady,
   onRun,
+  onRecovery,
 }: {
   id: string;
   name: string;
@@ -153,12 +170,19 @@ function DevicePane({
   busy: boolean;
   peerReady: boolean;
   onRun: (action: () => Promise<HostStatus>) => Promise<void>;
+  onRecovery: (recoveryKey: string) => void;
 }) {
   const [password, setPassword] = useState("");
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
+  const [username, setUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [newKind, setNewKind] = useState<"note" | "login">("login");
   const [selectedId, setSelectedId] = useState("");
   const [draftTitle, setDraftTitle] = useState("");
+  const [draftNotes, setDraftNotes] = useState("");
+  const [draftUsername, setDraftUsername] = useState("");
+  const [draftPassword, setDraftPassword] = useState("");
   const phase = device?.phase ?? "empty";
   const selected = device?.items.find((item) => item.itemId === selectedId) ?? null;
 
@@ -211,7 +235,13 @@ function DevicePane({
             className="primary"
             type="button"
             disabled={busy || password.length === 0}
-            onClick={() => void withPassword((secret) => createDeviceA(secret))}
+            onClick={() =>
+              void withPassword(async (secret) => {
+                const created = await createDeviceA(secret);
+                onRecovery(created.recoveryKey);
+                return created.status;
+              })
+            }
           >
             创建保险库
           </button>
@@ -245,6 +275,19 @@ function DevicePane({
             同步这台设备
           </button>
         ) : null}
+        {phase === "unlocked" ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setLoginPassword("");
+              setDraftPassword("");
+              void onRun(() => lockDevice(id));
+            }}
+          >
+            锁定
+          </button>
+        ) : null}
       </div>
 
       {phase === "empty" ? (
@@ -274,6 +317,7 @@ function DevicePane({
                 <tr>
                   <td className="empty" colSpan={5}>
                     还没有条目。写一条笔记，同步之前另一台设备看不到它。
+                    还没有条目。写一条登录或笔记，同步之前另一台设备看不到它。
                   </td>
                 </tr>
               ) : (
@@ -285,6 +329,9 @@ function DevicePane({
                     onSelect={() => {
                       setSelectedId(item.itemId);
                       setDraftTitle(item.title);
+                      setDraftNotes(item.notes);
+                      setDraftUsername(item.username ?? "");
+                      setDraftPassword(item.password ?? "");
                     }}
                   />
                 ))
@@ -297,23 +344,66 @@ function DevicePane({
             onSubmit={(event) => {
               event.preventDefault();
               void onRun(async () => {
-                const next = await createNote(id, title, notes);
+                const next =
+                  newKind === "login"
+                    ? await createLogin(id, title, username, loginPassword, notes)
+                    : await createNote(id, title, notes);
                 setTitle("");
+                setUsername("");
+                setLoginPassword("");
                 setNotes("");
                 return next;
               });
             }}
           >
+            <fieldset className="kind">
+              <legend>新条目</legend>
+              <label>
+                <input
+                  type="radio"
+                  name={id + "-kind"}
+                  checked={newKind === "login"}
+                  onChange={() => setNewKind("login")}
+                />
+                登录
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name={id + "-kind"}
+                  checked={newKind === "note"}
+                  onChange={() => setNewKind("note")}
+                />
+                笔记
+              </label>
+            </fieldset>
             <label>
-              新笔记标题
+              标题
               <input value={title} onChange={(event) => setTitle(event.target.value)} />
             </label>
+            {newKind === "login" ? (
+              <>
+                <label>
+                  用户名
+                  <input value={username} autoComplete="off" onChange={(event) => setUsername(event.target.value)} />
+                </label>
+                <label>
+                  密码
+                  <input
+                    type="password"
+                    value={loginPassword}
+                    autoComplete="new-password"
+                    onChange={(event) => setLoginPassword(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : null}
             <label>
               备注
               <textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
             </label>
             <button className="primary" type="submit" disabled={busy || title.trim().length === 0}>
-              新建笔记
+              {newKind === "login" ? "新建登录" : "新建笔记"}
             </button>
           </form>
 
@@ -324,19 +414,56 @@ function DevicePane({
               if (!selected) {
                 return;
               }
-              void onRun(() => renameItem(id, selected.itemId, draftTitle));
+              const itemId = selected.itemId;
+              const login = selected.kind === "登录";
+              void onRun(() =>
+                login
+                  ? updateLogin(id, itemId, draftTitle, draftUsername, draftPassword, draftNotes)
+                  : updateNote(id, itemId, draftTitle, draftNotes),
+              );
             }}
           >
             <label>
-              把选中条目标题改成
+              选中条目
               <input
                 value={draftTitle}
                 disabled={!selected}
                 onChange={(event) => setDraftTitle(event.target.value)}
               />
             </label>
+            {selected?.kind === "登录" ? (
+              <>
+                <label>
+                  用户名
+                  <input
+                    value={draftUsername}
+                    autoComplete="off"
+                    disabled={!selected}
+                    onChange={(event) => setDraftUsername(event.target.value)}
+                  />
+                </label>
+                <label>
+                  密码
+                  <input
+                    type="password"
+                    value={draftPassword}
+                    autoComplete="off"
+                    disabled={!selected}
+                    onChange={(event) => setDraftPassword(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : null}
+            <label>
+              备注
+              <textarea
+                value={draftNotes}
+                disabled={!selected}
+                onChange={(event) => setDraftNotes(event.target.value)}
+              />
+            </label>
             <button type="submit" disabled={busy || !selected || draftTitle.trim().length === 0}>
-              保存新标题
+              保存修改
             </button>
           </form>
         </>
