@@ -13,6 +13,8 @@ uuid = "1"
 zeroize = { version = "1", features = ["derive"] }
 vault-core = { path = "../vault-core" }
 vault-exchange = { path = "../vault-exchange" }
+vault-storage = { path = "../vault-storage" }
+vault-storage-sqlite = { path = "../vault-storage-sqlite" }
 
 [dev-dependencies]
 keepass = { version = "0.15", features = ["save_kdbx4"] }

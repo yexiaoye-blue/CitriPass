@@ -16,14 +16,6 @@ pub enum Error {
     #[error("无法写入保险库文件: {0}")]
     Write(#[source] io::Error),
 
-    /// The local file does not contain a complete record.
-    #[error("保险库文件不完整")]
-    Truncated,
-
-    /// A length prefix asked for more data than the file is allowed to hold.
-    #[error("保险库文件超过允许的大小")]
-    TooLarge,
-
     /// The first record is not a vault header, or a later record is not an item.
     #[error("保险库文件不是由 CPV1 头和 CPI1 条目组成")]
     UnexpectedRecord,
@@ -61,6 +53,12 @@ impl From<vault_core::Error> for Error {
 
 impl From<vault_exchange::Error> for Error {
     fn from(error: vault_exchange::Error) -> Self {
+        Self::Message(error.to_string())
+    }
+}
+
+impl From<vault_storage_sqlite::SqliteStoreError> for Error {
+    fn from(error: vault_storage_sqlite::SqliteStoreError) -> Self {
         Self::Message(error.to_string())
     }
 }

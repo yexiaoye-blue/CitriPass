@@ -1,7 +1,6 @@
 mod error;
 mod secret;
 mod session;
-mod store;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

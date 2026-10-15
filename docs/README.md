@@ -13,6 +13,7 @@ CitriPass 是一个本地优先、端到端加密、支持可选云端同步的�
 - [测试与发布](./07-testing-and-release.md)：测试门禁、审计准备和发布流程
 - [路线图](./08-roadmap.md)：从概念验证到公开版本的里程碑
 - [核心审查与性能记录](./09-vault-core-review.md)：vault-core 修复、基线、内存测量与验证边界
+- [存储协议层](./10-storage-protocol.md)：本地存储 SPI、事务边界和远端同步分层
 - [架构决策记录](./adr/README.md)：需要长期保持的关键技术决策
 
 ## 当前架构结论
@@ -24,7 +25,8 @@ CitriPass 是一个本地优先、端到端加密、支持可选云端同步的�
 
 ## 已确定的首期技术栈
 
-- Rust `vault-core`：跨端共享加密、密钥、数据模型和同步协议核心；
+- Rust `vault-core`：跨端共享加密、密钥和密文数据模型核心；
+- vault-storage：本地存储 SPI，隔离 SQLite、IndexedDB 等持久化细节；
 - React + TypeScript：Web Vault；
 - TypeScript + WebExtension：浏览器扩展；
 - Tauri + React：桌面端；

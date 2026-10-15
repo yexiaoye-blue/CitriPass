@@ -1,0 +1,11 @@
+[package]
+name = "vault-storage"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Storage ports and record contracts for CitriPass"
+
+[dependencies]
+thiserror = "2"
+uuid = "1"
+vault-core = { path = "../vault-core" }
