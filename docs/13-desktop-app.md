@@ -1,0 +1,63 @@
+# 正式桌面端
+
+`ui-desktop` 是 CitriPass 的正式桌面程序，给一个人在这台电脑上使用一本本地保险库。它不是验证台。`verification/desktop-host` 仍然用来把两台设备并排接在同一个保险库上，这里不修改它，也不把它的双设备界面搬过来。
+
+## 和验证宿主的差别
+
+验证宿主回答的是“两台设备能不能接到同一本保险库”。正式桌面端回答的是“我现在要打开自己的保险库”。
+
+- 只有一个窗口、一本保险库。没有设备 A / 设备 B，也不把保险库头复制到第二台设备。
+- 可以创建、解锁、立刻锁定，也会在空闲一段时间后自动锁定。
+- 可以记登录、笔记和独立验证码，搜索条目，建立文件夹，把条目标成收藏。
+- 同步是保险库里的一个动作，不是两台设备对照实验。
+- 不做账号、Redis、对象存储、附件上传、系统密钥库或加密备份。
+
+界面和命令只调用 `VaultSession`。SQLite 和附件目录在组合根里创建。界面不写 SQL，也不另做一套加密。条目修改走会自己提交的方法，不使用 `vault_mut` 之后再 `save`。
+
+登录密码用现有的 `generate_password` 生成。验证码显示当前动态码和剩余秒数。搜索走 `VaultSession::search`，匹配标题、备注、标签和登录用户名，不匹配密码。
+
+文件夹在 `ItemData` 里的父级字段是私有的，所以 `VaultSession::create_folder` 和 `update_folder` 负责创建和修改并自己提交。收藏和条目所在文件夹使用 `ItemDraft` 上已经公开的 `favorite` 和 `folder_id`。
+
+## 自动锁定
+
+默认空闲 5 分钟。界面可以改成 1 到 240 分钟。这个数字写在数据目录的 `idle-minutes` 里，文件里只有分钟数，没有主密码或条目密码。
+
+到时间后，桌面宿主丢掉解锁中的会话，内存里的库密钥一起清掉。SQLite 连接留在锁定状态。之后必须重新输入主密码。计时放在桌面宿主里，不放进存储驱动。
+
+查看状态和刷新验证码倒计时不算操作。点击、按键，以及创建、修改、搜索、同步这些动作才会重新计算空闲。如果空闲时间已经到了，再点按钮也不会把库重新打开。
+
+## 恢复密钥
+
+创建保险库时，恢复密钥只随这一次命令返回。宿主拿到展示用的文字后就丢掉原来的密钥，不写入数据库，也不写进日志。界面提示记下之后，点“我已记下，从界面清除”，这份文字就从界面状态里去掉。
+
+## 同步
+
+默认同步地址是 `http://127.0.0.1:18081`，可以改成别的不带账号的 http 或 https 地址。传输使用已经存在的 `HttpSyncTransport`，同步使用 `vault_sync::sync_items`。冲突仍由引擎处理：原条目保留服务器记录，本地没推上去的内容变成标题以「冲突 」开头的新条目。
+
+## 怎么构建和运行
+
+`cargo run` 使用已经构建好的页面，不会自动读取正在运行的开发服务器。先构建页面，再编译桌面程序：
+
+```bash
+cd ui-desktop
+npm install
+npm run build
+cd src-tauri
+cargo run
+```
+
+`ui-desktop/src-tauri/Cargo.toml` 里的路径依赖比验证宿主少一层，因为这个模块直接放在仓库根目录下。
+
+窗口标题是 CitriPass。开发构建的数据目录通常在本机数据目录下的 `app.citripass.desktop`。数据库是 `vault.sqlite`，附件目录是 `attachments`。这一版不上传附件，组合根只是把 `FileAttachmentStore` 准备好。
+
+同步服务本身不在这里启动。需要同步时，先按 `docs/11-sync-service.md` 让现有的 sync-service 监听 `127.0.0.1:18081`。
+
+## 这次实际跑过的检查
+
+以下是这次在本工作区里跑过的结果。没有启动图形窗口，所以不能把界面操作写成已经人工点过。也没有对正在运行的 sync-service 做联调。
+
+- `vault-storage` 的 `cargo test --lib folder_ -- --test-threads=1`：2 个测试通过，约 2.60 秒。覆盖文件夹父子关系、收藏、登录条目放进文件夹，以及重开后仍能读回；拒绝把文件夹放进自己的下级，也拒绝把笔记当成文件夹修改。
+- `ui-desktop/src-tauri` 的 `cargo test --lib idle_lock -- --test-threads=1`：自动锁定测试通过，约 1.31 秒。空闲后条目从内存视图消失，未解锁时不能新增笔记，重新输入主密码后原来的笔记还在，空闲分钟数会记到 `idle-minutes`。
+- `ui-desktop` 的 `npm run typecheck` 通过，`npm run build` 通过。
+- `vault-core`、`vault-storage` 和 `ui-desktop/src-tauri` 的 `cargo clippy --all-targets --offline -- -D warnings` 通过。桌面端这一条包含测试目标。
+- `ui-desktop/src-tauri` 的 `cargo build --offline` 通过，生成的是开发构建。

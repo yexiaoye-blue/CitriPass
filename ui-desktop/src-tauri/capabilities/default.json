@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Formal desktop vault window. Sync stays in the Rust process.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

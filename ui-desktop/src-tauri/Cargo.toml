@@ -1,0 +1,29 @@
+[package]
+name = "citripass-desktop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CitriPass desktop vault"
+
+[lib]
+name = "desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+thiserror = "2"
+uuid = "1"
+vault-attachment-store = { path = "../../vault-attachment-store" }
+vault-core = { path = "../../vault-core" }
+vault-storage = { path = "../../vault-storage" }
+vault-storage-sqlite = { path = "../../vault-storage-sqlite" }
+vault-sync = { path = "../../vault-sync" }
+zeroize = "1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

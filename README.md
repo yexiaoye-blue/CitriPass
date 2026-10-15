@@ -13,8 +13,9 @@ CitriPass 是本地优先的密码与凭据管理器。主密码只在客户端�
 - [sync-service](sync-service/README.md)：条目同步的 PostgreSQL 服务，只保存密文。
 - [vault-exchange](vault-exchange/README.md)：其他格式和保险库之间的导入、导出。第一版可以读入 KeePass KDBX。
 - [citri](citri/README.md)：本机命令行。用核心记录创建保险库、管理条目，并导入 KDBX。
+- [ui-desktop](ui-desktop/)：正式桌面端。一个人使用的本地保险库，见 [桌面端说明](docs/13-desktop-app.md)。
 
-Web、浏览器扩展、桌面、移动和服务端还没有放进这个仓库。
+Web、浏览器扩展和移动端还没有放进这个仓库。桌面验证宿主在 `verification/desktop-host`，正式桌面端在 `ui-desktop`。
 
 ## 构建核心
 
