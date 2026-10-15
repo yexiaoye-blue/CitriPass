@@ -27,6 +27,7 @@ CitriPass 是一个本地优先、端到端加密、支持可选云端同步的�
 
 - Rust `vault-core`：跨端共享加密、密钥和密文数据模型核心；
 - vault-storage：客户端使用的本地保险库协议，SQLite 和附件文件是后面的驱动；
+- vault-sync：条目同步端口，复用本地 outbox 和 cursor；
 - React + TypeScript：Web Vault；
 - TypeScript + WebExtension：浏览器扩展；
 - Tauri + React：桌面端；

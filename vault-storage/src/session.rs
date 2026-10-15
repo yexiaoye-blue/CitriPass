@@ -166,6 +166,30 @@ impl<S: VaultStore> VaultSession<S> {
         self.device_id
     }
 
+    /// Lend the unlocked vault and record driver to the sync engine.
+    ///
+    /// Product code should not write the driver through this hook.
+    pub fn with_sync_access<R>(
+        &mut self,
+        access: impl FnOnce(&mut UnlockedVault, &mut S) -> R,
+    ) -> R {
+        access(&mut self.vault, &mut self.store)
+    }
+
+    /// Remember the current vault records as already stored.
+    ///
+    /// Sync calls this after its record transaction commits. It does not write
+    /// the driver.
+    pub fn note_durable(&mut self) {
+        self.persisted_header = self.vault.header();
+        self.persisted_items = self
+            .vault
+            .sealed_items()
+            .iter()
+            .map(|item| (item.item_id(), item.clone()))
+            .collect();
+    }
+
     /// Borrow the unlocked vault for reads.
     pub fn vault(&self) -> &UnlockedVault {
         &self.vault
@@ -792,6 +816,10 @@ mod tests {
 
         fn apply_mutation(&mut self, mutation: StoreMutation) -> Result<(), Self::Error> {
             Ok(self.inner.apply_mutation(mutation)?)
+        }
+
+        fn replace_synced_item(&mut self, item: SealedItem) -> Result<(), Self::Error> {
+            Ok(self.inner.replace_synced_item(item)?)
         }
 
         fn pending_operations(&self, vault_id: Uuid) -> Result<Vec<PendingOperation>, Self::Error> {

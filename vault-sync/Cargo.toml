@@ -1,0 +1,13 @@
+[package]
+name = "vault-sync"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Item sync port for CitriPass"
+
+[dependencies]
+rand = "0.8"
+thiserror = "2"
+uuid = "1"
+vault-core = { path = "../vault-core" }
+vault-storage = { path = "../vault-storage" }

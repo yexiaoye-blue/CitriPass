@@ -442,6 +442,27 @@ impl<'connection> VaultStoreTransaction for SqliteTransaction<'connection> {
         Ok(())
     }
 
+    fn replace_synced_item(&mut self, item: SealedItem) -> Result<(), Self::Error> {
+        let vault_id = item.vault_id();
+        self.ensure_vault(vault_id)?;
+        self.transaction.execute(
+            "INSERT INTO items(vault_id, item_id, revision, deleted, item_record)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(vault_id, item_id) DO UPDATE SET
+                 revision = excluded.revision,
+                 deleted = excluded.deleted,
+                 item_record = excluded.item_record",
+            params![
+                id_bytes(vault_id),
+                id_bytes(item.item_id()),
+                i64_value(item.revision())?,
+                i64::from(item.deleted()),
+                item.to_bytes()?,
+            ],
+        )?;
+        Ok(())
+    }
+
     fn pending_operations(&self, vault_id: Uuid) -> Result<Vec<PendingOperation>, Self::Error> {
         self.ensure_vault(vault_id)?;
         let mut statement = self.transaction.prepare(

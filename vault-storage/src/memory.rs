@@ -234,6 +234,24 @@ impl<'a> VaultStoreTransaction for MemoryTransaction<'a> {
         Ok(())
     }
 
+    fn replace_synced_item(&mut self, item: SealedItem) -> Result<(), Self::Error> {
+        let vault_id = item.vault_id();
+        let snapshot = self
+            .working
+            .vaults
+            .get_mut(&vault_id)
+            .ok_or(MemoryStoreError::VaultNotFound(vault_id))?;
+        match snapshot
+            .items
+            .iter()
+            .position(|current| current.item_id() == item.item_id())
+        {
+            Some(index) => snapshot.items[index] = item,
+            None => snapshot.items.push(item),
+        }
+        Ok(())
+    }
+
     fn pending_operations(&self, vault_id: Uuid) -> Result<Vec<PendingOperation>, Self::Error> {
         if !self.working.vaults.contains_key(&vault_id) {
             return Err(MemoryStoreError::VaultNotFound(vault_id));

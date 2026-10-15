@@ -61,20 +61,22 @@ IndexedDB 可以实现同一组协议。SQLCipher 或系统磁盘加密属于本
 
 远端同步不直接实现 VaultStore。本地存储保证低延迟、离线访问和本地原子事务；远端同步还需要认证、网络重试、push/pull、cursor、冲突和幂等。
 
-远端应单独实现 SyncTransport，复用本协议的密文记录、revision、tombstone、operation id 和 cursor 数据结构：
+vault-sync 实现条目同步端口。它读取本协议已经保存的 outbox、revision 和 cursor，通过 SyncTransport 推送和拉取密文。第一版传输是内存服务器，用来固定规则；HTTP 传输还没有做。附件上传和下载也不在这一版里。
+
+同步端口复用这些数据结构：
 
 ```text
 vault-storage       本地保险库协议和驱动端口
 vault-storage-sqlite SQLite 驱动
 vault-sync          远端同步端口
-vault-sync-http     HTTP 同步实现
+vault-sync-http     以后的 HTTP 同步实现
 ```
 
 远端服务只能看到密文、稳定 ID、revision、cursor 和删除标记。
 
 ## 5. 当前限制
 
-本协议暂不定义 HTTP 请求格式或冲突合并策略。SQLite schema 由 vault-storage-sqlite 负责，附件分块文件由 vault-attachment-store 负责。客户端不直接选择这些驱动的内部表或目录布局。
+本协议暂不定义 HTTP 请求格式。条目冲突由 vault-sync 处理，不放进 SQLite 驱动。SQLite schema 由 vault-storage-sqlite 负责，附件分块文件由 vault-attachment-store 负责。客户端不直接选择这些驱动的内部表或目录布局。
 
 这些能力还不属于本协议，也不要塞进驱动端口：
 

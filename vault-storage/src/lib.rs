@@ -162,6 +162,12 @@ pub trait VaultStoreTransaction {
     /// Apply an encrypted item and optional outbox operation atomically.
     fn apply_mutation(&mut self, mutation: StoreMutation) -> Result<(), Self::Error>;
 
+    /// Replace one item with a server record.
+    ///
+    /// The revision may stay the same or move backwards. This does not write
+    /// an outbox operation. Local edits must use [`apply_mutation`](Self::apply_mutation).
+    fn replace_synced_item(&mut self, item: SealedItem) -> Result<(), Self::Error>;
+
     /// List pending operations in a deterministic adapter-defined order.
     fn pending_operations(&self, vault_id: Uuid) -> Result<Vec<PendingOperation>, Self::Error>;
 

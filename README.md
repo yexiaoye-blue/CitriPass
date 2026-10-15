@@ -9,6 +9,7 @@ CitriPass 是本地优先的密码与凭据管理器。主密码只在客户端�
 - [vault-storage](vault-storage/README.md)：客户端使用的本地保险库协议。SQLite 和附件文件是它后面的驱动。
 - [vault-storage-sqlite](vault-storage-sqlite/README.md)：SQLite 驱动，保存密文记录和同步元数据。
 - [vault-attachment-store](vault-attachment-store/README.md)：附件密文分块文件驱动。
+- [vault-sync](vault-sync/README.md)：条目同步端口。第一版用内存传输，不上传附件。
 - [vault-exchange](vault-exchange/README.md)：其他格式和保险库之间的导入、导出。第一版可以读入 KeePass KDBX。
 - [citri](citri/README.md)：本机命令行。用核心记录创建保险库、管理条目，并导入 KDBX。
 
