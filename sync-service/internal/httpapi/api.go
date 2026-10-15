@@ -112,7 +112,10 @@ func push(w http.ResponseWriter, r *http.Request, store syncsvc.Store) {
 		writeStoredError(w, err)
 		return
 	}
-	payload := pushResponse{Cursor: result.Cursor}
+	payload := pushResponse{
+		Cursor:  result.Cursor,
+		Results: make([]outcomeJSON, 0, len(result.Results)),
+	}
 	for _, item := range result.Results {
 		encoded := outcomeJSON{OperationID: item.OperationID.String(), Outcome: "accepted"}
 		if !item.Accepted {
@@ -168,7 +171,9 @@ func finish[T any](ctx context.Context, tx syncsvc.Tx, result T, err error) (T, 
 	committer, ok := tx.(syncsvc.Committer)
 	if err != nil {
 		if ok {
-			_ = committer.Rollback(ctx)
+			// The client may already have cancelled the request. ROLLBACK still
+			// has to be sent, or the pool throws away the connection.
+			_ = committer.Rollback(context.WithoutCancel(ctx))
 		}
 		var zero T
 		return zero, err

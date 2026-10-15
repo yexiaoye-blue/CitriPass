@@ -3,6 +3,7 @@ package syncsvc
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -110,6 +111,69 @@ func TestMismatchRollsBackTheBatch(t *testing.T) {
 	pulled := pullOK(t, ctx, store, vaultID, "")
 	if len(pulled.Records) != 0 || pulled.Cursor != "0" {
 		t.Fatalf("rolled back pull = %+v", pulled)
+	}
+}
+
+func TestReplayIgnoresALaterKindMismatch(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemory()
+	vaultID := uuid.New()
+	deviceID := uuid.New()
+	itemID := uuid.New()
+	first := mustRecord(t, vaultID, itemID, 1, false, []byte("one"))
+	opID := uuid.New()
+	pushed := pushOK(t, ctx, store, vaultID, deviceID, Operation{
+		ID: opID, VaultID: vaultID, DeviceID: deviceID, Kind: KindUpsert, Record: first,
+	})
+	if !pushed.Results[0].Accepted || pushed.Cursor != "1" {
+		t.Fatalf("first push = %+v", pushed)
+	}
+
+	replay, err := push(ctx, store, vaultID, deviceID, Operation{
+		ID: opID, VaultID: vaultID, DeviceID: deviceID, Kind: KindDelete, Record: first,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.Cursor != "1" || !replay.Results[0].Accepted {
+		t.Fatalf("replay = %+v", replay)
+	}
+}
+
+func TestConcurrentPushesKeepEveryItem(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemory()
+	vaultID := uuid.New()
+	deviceID := uuid.New()
+	const n = 16
+	records := make([]record.Record, 0, n)
+	for range n {
+		records = append(records, mustRecord(t, vaultID, uuid.New(), 1, false, []byte("item")))
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for _, item := range records {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := push(ctx, store, vaultID, deviceID, Operation{
+				ID: uuid.New(), VaultID: vaultID, DeviceID: deviceID, Kind: KindUpsert, Record: item,
+			})
+			if err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	pulled := pullOK(t, ctx, store, vaultID, "")
+	if len(pulled.Records) != n || pulled.Cursor != "16" {
+		t.Fatalf("pull count = %d cursor %s", len(pulled.Records), pulled.Cursor)
 	}
 }
 

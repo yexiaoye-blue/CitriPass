@@ -63,3 +63,32 @@ func TestPushAndPullOverHTTP(t *testing.T) {
 		t.Fatal("pulled record differs")
 	}
 }
+
+func TestEmptyPushReturnsJSONArray(t *testing.T) {
+	handler := Handler(syncsvc.NewMemory())
+	deviceID := uuid.New()
+	body := []byte(`{"device_id":"` + deviceID.String() + `","operations":[]}`)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/vaults/"+uuid.NewString()+"/sync/push",
+		bytes.NewReader(body),
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status %d %s", response.Code, response.Body.String())
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte(`"results":null`)) {
+		t.Fatalf("results encoded as null: %s", response.Body.String())
+	}
+	var payload struct {
+		Cursor  string `json:"cursor"`
+		Results []any  `json:"results"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Cursor != "0" || payload.Results == nil {
+		t.Fatalf("payload = %+v body %s", payload, response.Body.String())
+	}
+}

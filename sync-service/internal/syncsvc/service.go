@@ -132,13 +132,13 @@ func apply(ctx context.Context, tx Tx, vaultID, deviceID uuid.UUID, operation Op
 	if operation.VaultID != vaultID || operation.DeviceID != deviceID || operation.Record.VaultID != vaultID {
 		return Outcome{}, ErrOperationMismatch
 	}
-	if !kindMatches(operation.Kind, operation.Record.Deleted) {
-		return Outcome{}, ErrOperationMismatch
-	}
 	if remembered, ok, err := tx.Operation(ctx, vaultID, operation.ID); err != nil {
 		return Outcome{}, err
 	} else if ok {
 		return outcomeFrom(operation.ID, remembered), nil
+	}
+	if !kindMatches(operation.Kind, operation.Record.Deleted) {
+		return Outcome{}, ErrOperationMismatch
 	}
 
 	current, found, err := tx.Item(ctx, vaultID, operation.Record.ItemID)

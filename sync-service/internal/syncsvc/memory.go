@@ -2,6 +2,7 @@ package syncsvc
 
 import (
 	"context"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/yexiaoye-blue/CitriPass/sync-service/internal/record"
@@ -9,6 +10,7 @@ import (
 
 // Memory is an in-process store for the sync rules.
 type Memory struct {
+	mu     sync.Mutex
 	vaults map[uuid.UUID]*memVault
 }
 
@@ -26,6 +28,7 @@ func NewMemory() *Memory {
 
 // Begin starts a transaction over a copy of the store.
 func (m *Memory) Begin(context.Context) (Tx, error) {
+	m.mu.Lock()
 	return &memTx{store: m, working: cloneVaults(m.vaults)}, nil
 }
 
@@ -36,16 +39,24 @@ type memTx struct {
 }
 
 func (t *memTx) Commit(context.Context) error {
-	if !t.done {
-		t.store.vaults = t.working
-		t.done = true
-	}
+	t.finish(true)
 	return nil
 }
 
 func (t *memTx) Rollback(context.Context) error {
-	t.done = true
+	t.finish(false)
 	return nil
+}
+
+func (t *memTx) finish(commit bool) {
+	if t.done {
+		return
+	}
+	t.done = true
+	if commit {
+		t.store.vaults = t.working
+	}
+	t.store.mu.Unlock()
 }
 
 func (t *memTx) vault(id uuid.UUID) *memVault {
