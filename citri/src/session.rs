@@ -3,15 +3,17 @@ use std::io;
 use std::path::Path;
 
 use vault_core::{RecoveryKey, UnlockedVault};
-use vault_storage::{StoreMutation, VaultStore, VaultStoreTransaction};
+use vault_storage::VaultSession;
 use vault_storage_sqlite::SqliteStore;
 
 use crate::error::Error;
 
-/// An unlocked vault backed by one local SQLite database.
+/// Command-line handle for one local SQLite vault.
+///
+/// Persistence goes through `vault_storage::VaultSession`. This type only opens
+/// the database file.
 pub struct Session {
-    store: SqliteStore,
-    vault: UnlockedVault,
+    inner: VaultSession<SqliteStore>,
 }
 
 impl Session {
@@ -26,12 +28,8 @@ impl Session {
             }
         }
 
-        let (vault, recovery) = UnlockedVault::create(password)?;
-        let header = vault.header();
-        let mut store = SqliteStore::open(path)?;
-        let mut transaction = store.begin()?;
-        transaction.create_vault(header)?;
-        transaction.commit()?;
+        let store = SqliteStore::open(path)?;
+        let (_session, recovery) = VaultSession::create(store, password)?;
         Ok(recovery)
     }
 
@@ -43,40 +41,22 @@ impl Session {
                 "vault database does not exist",
             )));
         }
-        let mut store = SqliteStore::open(path)?;
-        let transaction = store.begin()?;
-        let vault_ids = transaction.list_vault_ids()?;
-        if vault_ids.len() != 1 {
-            return Err(Error::UnexpectedRecord);
-        }
-        let vault_id = vault_ids[0];
-        let snapshot = transaction
-            .load_vault(vault_id)?
-            .ok_or(Error::UnexpectedRecord)?;
-        drop(transaction);
-
-        let mut vault = UnlockedVault::unlock(&snapshot.header, password)?;
-        for item in &snapshot.items {
-            vault.import_item(item, None)?;
-        }
-        Ok(Self { store, vault })
+        Ok(Self {
+            inner: VaultSession::open(SqliteStore::open(path)?, password)?,
+        })
     }
 
     /// Mutable access to the unlocked vault.
+    ///
+    /// Changes become durable when [`save`](Self::save) commits them through
+    /// the storage protocol.
     pub fn vault_mut(&mut self) -> &mut UnlockedVault {
-        &mut self.vault
+        self.inner.vault_mut()
     }
 
-    /// Persist the header and every current item in one SQLite transaction.
+    /// Commit changed header and item records, including their outbox operations.
     pub fn save(mut self) -> Result<(), Error> {
-        let header = self.vault.header();
-        let items = self.vault.sealed_items().to_vec();
-        let mut transaction = self.store.begin()?;
-        transaction.update_vault_header(header)?;
-        for item in items {
-            transaction.apply_mutation(StoreMutation { item, outbox: None })?;
-        }
-        transaction.commit()?;
+        self.inner.save()?;
         Ok(())
     }
 }

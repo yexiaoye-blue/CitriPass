@@ -18,7 +18,7 @@ use vault_storage::{
     VaultStoreTransaction,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;
@@ -26,6 +26,12 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS vaults (
     vault_id BLOB PRIMARY KEY NOT NULL,
     header_record BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_device (
+    vault_id BLOB PRIMARY KEY NOT NULL,
+    device_id BLOB NOT NULL,
+    FOREIGN KEY (vault_id) REFERENCES vaults(vault_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -251,6 +257,29 @@ impl<'connection> VaultStoreTransaction for SqliteTransaction<'connection> {
         self.transaction.execute(
             "UPDATE vaults SET header_record = ?2 WHERE vault_id = ?1",
             params![id_bytes(vault_id), header.to_bytes()?],
+        )?;
+        Ok(())
+    }
+
+    fn local_device_id(&self, vault_id: Uuid) -> Result<Option<Uuid>, Self::Error> {
+        self.ensure_vault(vault_id)?;
+        let device_id = self
+            .transaction
+            .query_row(
+                "SELECT device_id FROM local_device WHERE vault_id = ?1",
+                params![id_bytes(vault_id)],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?;
+        device_id.map(|bytes| parse_id(&bytes)).transpose()
+    }
+
+    fn set_local_device_id(&mut self, vault_id: Uuid, device_id: Uuid) -> Result<(), Self::Error> {
+        self.ensure_vault(vault_id)?;
+        self.transaction.execute(
+            "INSERT INTO local_device(vault_id, device_id) VALUES (?1, ?2)
+             ON CONFLICT(vault_id) DO UPDATE SET device_id = excluded.device_id",
+            params![id_bytes(vault_id), id_bytes(device_id)],
         )?;
         Ok(())
     }

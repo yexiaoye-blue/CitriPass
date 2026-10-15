@@ -1,21 +1,27 @@
 //! Storage ports and record contracts for CitriPass.
 //!
-//! This crate is the JDBC-like SPI between the encrypted vault domain and
-//! persistence details. It owns no database, file, network, or async-runtime
-//! implementation. Adapters implement VaultStore and keep the transaction
-//! guarantees described by VaultStoreTransaction.
+//! `VaultSession` is the protocol desktop, web, and mobile hosts call. It
+//! unlocks a vault, commits one item change with its outbox operation, and
+//! commits an attachment only after its ciphertext is complete.
+//!
+//! `VaultStore` and `AttachmentContent` are the driver ports. This crate
+//! still owns no SQLite, filesystem, HTTP, or async-runtime implementation.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod attachment;
 mod memory;
+mod session;
 
 use std::error::Error as StdError;
 
 use uuid::Uuid;
 use vault_core::{SealedAttachment, SealedItem, SealedVault};
 
+pub use attachment::{AttachmentContent, AttachmentWriter};
 pub use memory::{MemoryStore, MemoryStoreError, MemoryTransaction};
+pub use session::{SessionError, VaultSession};
 
 /// Header and independently stored item records for one vault.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,6 +181,12 @@ pub trait VaultStoreTransaction {
         vault_id: Uuid,
         cursor: Option<SyncCursor>,
     ) -> Result<(), Self::Error>;
+
+    /// Read the device id recorded for outbox operations, if one exists.
+    fn local_device_id(&self, vault_id: Uuid) -> Result<Option<Uuid>, Self::Error>;
+
+    /// Record the device id used for outbox operations from this local store.
+    fn set_local_device_id(&mut self, vault_id: Uuid, device_id: Uuid) -> Result<(), Self::Error>;
 
     /// Commit all changes made through this transaction.
     fn commit(self) -> Result<(), Self::Error>;

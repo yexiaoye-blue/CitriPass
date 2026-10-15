@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 use vault_core::{AttachmentEncryptor, SealedAttachment, UnlockedVault, ATTACHMENT_CHUNK_SIZE};
+use vault_storage::{AttachmentContent, AttachmentWriter};
 
 /// Errors raised by the local attachment store.
 #[derive(Debug, Error)]
@@ -118,6 +119,45 @@ impl FileAttachmentStore {
     fn chunk_path(&self, descriptor: &SealedAttachment, index: u32) -> PathBuf {
         self.attachment_dir(descriptor)
             .join(format!("chunk-{index:08}.bin"))
+    }
+}
+
+impl AttachmentContent for FileAttachmentStore {
+    type Error = AttachmentStoreError;
+    type Writer = FileAttachmentWriter;
+
+    fn begin(
+        &self,
+        vault: &UnlockedVault,
+        item_id: uuid::Uuid,
+        revision: u64,
+        size: u64,
+    ) -> Result<Self::Writer, Self::Error> {
+        FileAttachmentStore::begin(self, vault, item_id, revision, size)
+    }
+
+    fn read_all(
+        &self,
+        vault: &UnlockedVault,
+        descriptor: &SealedAttachment,
+    ) -> Result<Vec<u8>, Self::Error> {
+        FileAttachmentStore::read_all(self, vault, descriptor)
+    }
+
+    fn delete(&self, descriptor: &SealedAttachment) -> Result<(), Self::Error> {
+        FileAttachmentStore::delete(self, descriptor)
+    }
+}
+
+impl AttachmentWriter for FileAttachmentWriter {
+    type Error = AttachmentStoreError;
+
+    fn write_chunk(&mut self, plaintext: &[u8]) -> Result<(), Self::Error> {
+        FileAttachmentWriter::write_chunk(self, plaintext)
+    }
+
+    fn finish(self) -> Result<SealedAttachment, Self::Error> {
+        FileAttachmentWriter::finish(self)
     }
 }
 

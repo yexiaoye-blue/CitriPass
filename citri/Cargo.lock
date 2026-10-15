@@ -304,6 +304,7 @@ dependencies = [
  "rpassword",
  "thiserror",
  "uuid",
+ "vault-attachment-store",
  "vault-core",
  "vault-exchange",
  "vault-storage",
@@ -1188,6 +1189,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vault-attachment-store"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "uuid",
+ "vault-core",
+ "vault-storage",
+]
+
+[[package]]
 name = "vault-core"
 version = "0.1.0"
 dependencies = [
@@ -1219,9 +1230,11 @@ dependencies = [
 name = "vault-storage"
 version = "0.1.0"
 dependencies = [
+ "rand",
  "thiserror",
  "uuid",
  "vault-core",
+ "zeroize",
 ]
 
 [[package]]

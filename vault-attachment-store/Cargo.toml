@@ -9,3 +9,4 @@ description = "Encrypted local attachment chunk storage for CitriPass"
 thiserror = "2"
 uuid = "1"
 vault-core = { path = "../vault-core" }
+vault-storage = { path = "../vault-storage" }

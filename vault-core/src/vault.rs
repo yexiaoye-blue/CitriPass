@@ -121,6 +121,69 @@ impl UnlockedVault {
         &self.sealed.items
     }
 
+    /// Drop a local item mutation that storage did not commit.
+    ///
+    /// `previous` is the last committed record. `None` means the item was
+    /// created in memory and must disappear without a tombstone. Sync imports
+    /// still go through [`Self::import_item`], which rejects older revisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotFound`] when there is no committed record and the
+    /// item is not currently loaded. A record for another vault or a record
+    /// that fails authentication is rejected.
+    pub fn undo_uncommitted_item(
+        &mut self,
+        item_id: Uuid,
+        previous: Option<&SealedItem>,
+    ) -> Result<()> {
+        match previous {
+            Some(previous) => {
+                if previous.item_id() != item_id || previous.vault_id() != self.vault_id() {
+                    return Err(Error::InvalidInput(InputError::InvalidVaultId));
+                }
+                let _authenticated = self.read_item(previous)?;
+                match self.index.get(&item_id).copied() {
+                    Some(index) => self.sealed.items[index] = previous.clone(),
+                    None => {
+                        if self.sealed.items.len() >= MAX_ITEMS {
+                            return Err(Error::InvalidInput(InputError::TooManyItems {
+                                max_items: MAX_ITEMS,
+                            }));
+                        }
+                        self.index.insert(item_id, self.sealed.items.len());
+                        self.sealed.items.push(previous.clone());
+                    }
+                }
+                Ok(())
+            }
+            None => {
+                let index = self.position(item_id)?;
+                self.sealed.items.remove(index);
+                self.reindex();
+                Ok(())
+            }
+        }
+    }
+
+    /// Restore header wraps after a local header write failed to commit.
+    ///
+    /// Loaded item records stay in place. The replacement header must belong
+    /// to this vault and must not carry item records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the header identity does not match.
+    pub fn undo_uncommitted_header(&mut self, header: &SealedVault) -> Result<()> {
+        if header.vault_id() != self.vault_id() || !header.items().is_empty() {
+            return Err(Error::InvalidInput(InputError::InvalidVaultId));
+        }
+        self.sealed.kdf = header.kdf.clone();
+        self.sealed.wrapped_vault_key = header.wrapped_vault_key.clone();
+        self.sealed.recovery = header.recovery.clone();
+        Ok(())
+    }
+
     /// Replace the master wrap. Item ciphertext is not rewritten.
     pub fn change_master_password(&mut self, old_password: &str, new_password: &str) -> Result<()> {
         require_password(old_password)?;
@@ -393,6 +456,16 @@ impl UnlockedVault {
         self.index.get(&item_id).copied().ok_or(Error::NotFound)
     }
 
+    fn reindex(&mut self) {
+        self.index = self
+            .sealed
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item.item_id(), index))
+            .collect();
+    }
+
     fn set_deleted(&mut self, item_id: Uuid, deleted: bool) -> Result<Item> {
         let current = self.get_item(item_id)?;
         if current.deleted == deleted {
@@ -547,4 +620,45 @@ fn unwrap_key(
     vault_key.copy_from_slice(&raw);
     raw.zeroize();
     Ok(vault_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::item::{ItemData, ItemDraft};
+
+    #[test]
+    fn undo_restores_the_last_committed_item_and_header() {
+        let password = format!("core-undo-{}", std::process::id());
+        let (mut vault, _) = UnlockedVault::create(&password).unwrap();
+        let created = vault
+            .create_item(ItemDraft::new("Note", ItemData::SecureNote))
+            .unwrap();
+        let committed = vault.export_item(created.item_id).unwrap();
+        let committed_header = vault.header();
+
+        vault
+            .update_item(
+                created.item_id,
+                ItemDraft::new("Changed", ItemData::SecureNote),
+            )
+            .unwrap();
+        vault
+            .undo_uncommitted_item(created.item_id, Some(&committed))
+            .unwrap();
+        assert_eq!(vault.export_item(created.item_id).unwrap(), committed);
+
+        let extra = vault
+            .create_item(ItemDraft::new("Extra", ItemData::SecureNote))
+            .unwrap();
+        vault.undo_uncommitted_item(extra.item_id, None).unwrap();
+        assert!(vault.get_item(extra.item_id).is_err());
+
+        vault
+            .change_master_password(&password, "replacement-password")
+            .unwrap();
+        assert_ne!(vault.header(), committed_header);
+        vault.undo_uncommitted_header(&committed_header).unwrap();
+        assert_eq!(vault.header(), committed_header);
+    }
 }

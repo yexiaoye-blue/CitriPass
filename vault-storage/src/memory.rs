@@ -50,6 +50,7 @@ struct MemoryState {
     outbox: BTreeMap<Uuid, PendingOperation>,
     cursors: HashMap<Uuid, SyncCursor>,
     attachments: BTreeMap<(Uuid, Uuid), AttachmentRecord>,
+    devices: HashMap<Uuid, Uuid>,
 }
 
 /// In-memory implementation used by protocol contract tests and small hosts.
@@ -125,6 +126,21 @@ impl<'a> VaultStoreTransaction for MemoryTransaction<'a> {
             .get_mut(&vault_id)
             .ok_or(MemoryStoreError::VaultNotFound(vault_id))?;
         snapshot.header = header;
+        Ok(())
+    }
+
+    fn local_device_id(&self, vault_id: Uuid) -> Result<Option<Uuid>, Self::Error> {
+        if !self.working.vaults.contains_key(&vault_id) {
+            return Err(MemoryStoreError::VaultNotFound(vault_id));
+        }
+        Ok(self.working.devices.get(&vault_id).copied())
+    }
+
+    fn set_local_device_id(&mut self, vault_id: Uuid, device_id: Uuid) -> Result<(), Self::Error> {
+        if !self.working.vaults.contains_key(&vault_id) {
+            return Err(MemoryStoreError::VaultNotFound(vault_id));
+        }
+        self.working.devices.insert(vault_id, device_id);
         Ok(())
     }
 
