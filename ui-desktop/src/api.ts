@@ -12,6 +12,9 @@ export interface ItemView {
   notes: string;
   username: string | null;
   password: string | null;
+  totpCode: string | null;
+  totpRemaining: number | null;
+  totpSecret: string | null;
 }
 
 export interface SyncView {
@@ -99,6 +102,29 @@ export function updateLogin(
   notes: string,
 ): Promise<HostStatus> {
   return invoke("update_login", { device, itemId, title, username, password, notes });
+}
+
+export function createTotp(
+  device: string,
+  title: string,
+  secret: string,
+  notes: string,
+): Promise<HostStatus> {
+  return invoke("create_totp", { device, title, secret, notes });
+}
+
+export function updateTotp(
+  device: string,
+  itemId: string,
+  title: string,
+  secret: string,
+  notes: string,
+): Promise<HostStatus> {
+  return invoke("update_totp", { device, itemId, title, secret, notes });
+}
+
+export function generatePassword(length: number): Promise<string> {
+  return invoke("generate_password", { length });
 }
 
 export function renameItem(device: string, itemId: string, title: string): Promise<HostStatus> {

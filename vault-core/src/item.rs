@@ -204,6 +204,43 @@ impl ItemDraft {
             _ => None,
         }
     }
+
+    /// Whether this draft is a standalone TOTP item.
+    pub fn is_standalone_totp(&self) -> bool {
+        matches!(self.data, ItemData::Totp { .. })
+    }
+
+    /// Base32 secret for a standalone TOTP item or a login that carries TOTP.
+    pub fn totp_secret(&self) -> Option<&str> {
+        self.totp().map(|totp| totp.secret.as_str())
+    }
+
+    /// Step size in seconds for a TOTP carried by this draft.
+    pub fn totp_period(&self) -> Option<u32> {
+        self.totp().map(|totp| totp.period)
+    }
+
+    /// Current TOTP code, if this draft has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored TOTP parameters are not usable.
+    pub fn totp_code_at(&self, unix_seconds: u64) -> Result<Option<Zeroizing<String>>> {
+        self.totp()
+            .map(|totp| totp.code_at(unix_seconds))
+            .transpose()
+    }
+
+    fn totp(&self) -> Option<&Totp> {
+        match &self.data {
+            ItemData::Totp { totp } => Some(totp),
+            ItemData::Login {
+                otp: Some(Otp::Totp(totp)),
+                ..
+            } => Some(totp),
+            _ => None,
+        }
+    }
 }
 
 impl From<LoginDraft> for ItemDraft {
@@ -217,6 +254,26 @@ impl From<LoginDraft> for ItemDraft {
                 otp: None,
             },
         );
+        item.notes = std::mem::take(&mut draft.notes);
+        item
+    }
+}
+
+/// Standalone TOTP item before encryption.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct TotpDraft {
+    /// Display title.
+    pub title: String,
+    /// Freeform notes.
+    pub notes: String,
+    /// TOTP parameters and secret.
+    pub totp: Totp,
+}
+
+impl From<TotpDraft> for ItemDraft {
+    fn from(mut draft: TotpDraft) -> Self {
+        let totp = std::mem::replace(&mut draft.totp, Totp::new(String::new()));
+        let mut item = Self::new(std::mem::take(&mut draft.title), ItemData::Totp { totp });
         item.notes = std::mem::take(&mut draft.notes);
         item
     }

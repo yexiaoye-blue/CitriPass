@@ -11,7 +11,10 @@ use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 use vault_attachment_store::FileAttachmentStore;
-use vault_core::{Item, ItemData, ItemDraft, LoginDraft, SealedVault};
+use vault_core::{
+    generate_password, Item, ItemData, ItemDraft, LoginDraft, PasswordOptions, SealedVault, Totp,
+    TotpDraft,
+};
 use vault_storage::{SessionError, VaultSession, VaultStore, VaultStoreTransaction};
 use vault_storage_sqlite::{SqliteStore, SqliteStoreError};
 use vault_sync::{sync_items, HttpSyncError, HttpSyncTransport, SyncReport};
@@ -117,6 +120,9 @@ pub(crate) struct ItemView {
     pub(crate) notes: String,
     pub(crate) username: Option<String>,
     pub(crate) password: Option<String>,
+    pub(crate) totp_code: Option<String>,
+    pub(crate) totp_remaining: Option<u32>,
+    pub(crate) totp_secret: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -347,6 +353,37 @@ impl HostInner {
         self.status()
     }
 
+    pub(crate) fn create_totp(
+        &mut self,
+        device: DeviceId,
+        title: &str,
+        secret: &str,
+        notes: &str,
+    ) -> Result<HostStatus, HostError> {
+        let draft = totp_draft(title, secret, notes)?;
+        with_session(self.slot_mut(device), |session| {
+            session.create_totp(draft).map_err(session_err)?;
+            Ok(())
+        })?;
+        self.status()
+    }
+
+    pub(crate) fn update_totp(
+        &mut self,
+        device: DeviceId,
+        item_id: Uuid,
+        title: &str,
+        secret: &str,
+        notes: &str,
+    ) -> Result<HostStatus, HostError> {
+        let draft = totp_draft(title, secret, notes)?;
+        with_session(self.slot_mut(device), |session| {
+            session.update_totp(item_id, draft).map_err(session_err)?;
+            Ok(())
+        })?;
+        self.status()
+    }
+
     pub(crate) fn rename_item(
         &mut self,
         device: DeviceId,
@@ -475,6 +512,20 @@ fn device_view(id: &str, slot: &mut DeviceSlot) -> Result<DeviceView, HostError>
 
 fn item_view(item: Item) -> ItemView {
     let conflict_copy = item.content.title.starts_with("冲突 ");
+    let now = unix_now();
+    let period = item.totp_period();
+    let totp_code = item
+        .totp_code_at(now)
+        .ok()
+        .flatten()
+        .map(|code| code.to_string());
+    let totp_remaining = match (totp_code.as_ref(), period) {
+        (Some(_), Some(period)) if period > 0 => {
+            let elapsed = u32::try_from(now % u64::from(period)).unwrap_or(0);
+            Some(period - elapsed)
+        }
+        _ => None,
+    };
     ItemView {
         item_id: item.item_id.to_string(),
         title: item.content.title.clone(),
@@ -485,6 +536,61 @@ fn item_view(item: Item) -> ItemView {
         notes: item.content.notes.clone(),
         username: item.login_username().map(ToOwned::to_owned),
         password: item.login_password().map(ToOwned::to_owned),
+        totp_code,
+        totp_remaining,
+        totp_secret: item.totp_secret().map(ToOwned::to_owned),
+    }
+}
+
+pub(crate) fn generated_password(length: u32) -> Result<String, HostError> {
+    let options = PasswordOptions {
+        length: usize::try_from(length).unwrap_or(usize::MAX),
+        ..PasswordOptions::default()
+    };
+    generate_password(&options)
+        .map(|password| password.to_string())
+        .map_err(|error| HostError::Protocol(explain(error)))
+}
+
+fn totp_draft(title: &str, secret: &str, notes: &str) -> Result<TotpDraft, HostError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(HostError::EmptyTitle);
+    }
+    let secret: String = secret
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(|character| character.to_uppercase())
+        .collect();
+    Ok(TotpDraft {
+        title: title.to_string(),
+        notes: notes.to_string(),
+        totp: Totp::new(secret),
+    })
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+fn explain(error: vault_core::Error) -> String {
+    use vault_core::{Error, InputError};
+    match error {
+        Error::InvalidInput(InputError::InvalidPasswordLength { min, max }) => {
+            format!("密码长度必须在 {min} 到 {max} 之间")
+        }
+        Error::InvalidInput(InputError::NoCharacterGroups) => "至少要包含一类字符".to_string(),
+        Error::InvalidInput(InputError::InvalidTotpSecretEncoding) => {
+            "验证码密钥必须是不带填充的 Base32".to_string()
+        }
+        Error::InvalidInput(InputError::TotpSecretTooShort { min_bits }) => {
+            format!("验证码密钥太短，至少需要 {min_bits} 位")
+        }
+        Error::InvalidInput(InputError::NotTotp) => "这条不是验证码条目".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -619,7 +725,7 @@ fn session_err(error: SessionError<SqliteStoreError>) -> HostError {
     match error {
         SessionError::Store(error) => HostError::Store(error.to_string()),
         SessionError::Core(vault_core::Error::NotFound) => HostError::MissingItem,
-        SessionError::Core(error) => HostError::Protocol(error.to_string()),
+        SessionError::Core(error) => HostError::Protocol(explain(error)),
         other => HostError::Protocol(other.to_string()),
     }
 }

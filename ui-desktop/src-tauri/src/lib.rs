@@ -45,6 +45,9 @@ pub fn run() {
             create_login,
             update_note,
             update_login,
+            create_totp,
+            update_totp,
+            generate_password,
             rename_item,
             sync_device
         ])
@@ -208,6 +211,49 @@ async fn update_login(
             .map_err(|error| error.to_string())
     })
     .await
+}
+
+#[tauri::command]
+async fn create_totp(
+    host: State<'_, SharedHost>,
+    device: String,
+    title: String,
+    secret: String,
+    notes: String,
+) -> Result<HostStatus, String> {
+    let shared = Arc::clone(&host.0);
+    blocking(move || {
+        let device = DeviceId::parse(&device).map_err(|error| error.to_string())?;
+        lock_arc(&shared)
+            .create_totp(device, &title, &secret, &notes)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_totp(
+    host: State<'_, SharedHost>,
+    device: String,
+    item_id: String,
+    title: String,
+    secret: String,
+    notes: String,
+) -> Result<HostStatus, String> {
+    let shared = Arc::clone(&host.0);
+    blocking(move || {
+        let device = DeviceId::parse(&device).map_err(|error| error.to_string())?;
+        let item_id = Uuid::parse_str(&item_id).map_err(|_| "条目编号无法识别".to_string())?;
+        lock_arc(&shared)
+            .update_totp(device, item_id, &title, &secret, &notes)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+fn generate_password(length: u32) -> Result<String, String> {
+    host::generated_password(length).map_err(|error| error.to_string())
 }
 
 #[tauri::command]

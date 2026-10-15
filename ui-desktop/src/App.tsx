@@ -3,7 +3,9 @@ import {
   createDeviceA,
   createLogin,
   createNote,
+  createTotp,
   errorText,
+  generatePassword,
   hostStatus,
   inDesktopHost,
   lockDevice,
@@ -11,6 +13,7 @@ import {
   syncDevice,
   updateLogin,
   updateNote,
+  updateTotp,
   unlockDevice,
   type DeviceView,
   type HostStatus,
@@ -48,6 +51,22 @@ export function App() {
       cancelled = true;
     };
   }, [desktop]);
+
+  const showsTotp =
+    status?.devices.some(
+      (device) => device.phase === "unlocked" && device.items.some((item) => item.totpCode),
+    ) ?? false;
+  useEffect(() => {
+    if (!desktop || !showsTotp) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      hostStatus()
+        .then((next) => setStatus(next))
+        .catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [desktop, showsTotp]);
 
   async function run(action: () => Promise<HostStatus>) {
     setError("");
@@ -177,12 +196,15 @@ function DevicePane({
   const [notes, setNotes] = useState("");
   const [username, setUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
-  const [newKind, setNewKind] = useState<"note" | "login">("login");
+  const [secret, setSecret] = useState("");
+  const [length, setLength] = useState("24");
+  const [newKind, setNewKind] = useState<"note" | "login" | "totp">("login");
   const [selectedId, setSelectedId] = useState("");
   const [draftTitle, setDraftTitle] = useState("");
   const [draftNotes, setDraftNotes] = useState("");
   const [draftUsername, setDraftUsername] = useState("");
   const [draftPassword, setDraftPassword] = useState("");
+  const [draftSecret, setDraftSecret] = useState("");
   const phase = device?.phase ?? "empty";
   const selected = device?.items.find((item) => item.itemId === selectedId) ?? null;
 
@@ -332,6 +354,7 @@ function DevicePane({
                       setDraftNotes(item.notes);
                       setDraftUsername(item.username ?? "");
                       setDraftPassword(item.password ?? "");
+                      setDraftSecret(item.totpSecret ?? "");
                     }}
                   />
                 ))
@@ -347,10 +370,13 @@ function DevicePane({
                 const next =
                   newKind === "login"
                     ? await createLogin(id, title, username, loginPassword, notes)
-                    : await createNote(id, title, notes);
+                    : newKind === "totp"
+                      ? await createTotp(id, title, secret, notes)
+                      : await createNote(id, title, notes);
                 setTitle("");
                 setUsername("");
                 setLoginPassword("");
+                setSecret("");
                 setNotes("");
                 return next;
               });
@@ -376,6 +402,15 @@ function DevicePane({
                 />
                 笔记
               </label>
+              <label>
+                <input
+                  type="radio"
+                  name={id + "-kind"}
+                  checked={newKind === "totp"}
+                  onChange={() => setNewKind("totp")}
+                />
+                验证码
+              </label>
             </fieldset>
             <label>
               标题
@@ -396,14 +431,46 @@ function DevicePane({
                     onChange={(event) => setLoginPassword(event.target.value)}
                   />
                 </label>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void onRun(async () => {
+                      const generated = await generatePassword(Number(length) || 24);
+                      setLoginPassword(generated);
+                      return hostStatus();
+                    })
+                  }
+                >
+                  生成 {length} 位密码
+                </button>
+                <label>
+                  长度
+                  <input
+                    inputMode="numeric"
+                    value={length}
+                    onChange={(event) => setLength(event.target.value)}
+                  />
+                </label>
               </>
+            ) : null}
+            {newKind === "totp" ? (
+              <label>
+                密钥
+                <textarea
+                  value={secret}
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(event) => setSecret(event.target.value)}
+                />
+              </label>
             ) : null}
             <label>
               备注
               <textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
             </label>
             <button className="primary" type="submit" disabled={busy || title.trim().length === 0}>
-              {newKind === "login" ? "新建登录" : "新建笔记"}
+              {newKind === "login" ? "新建登录" : newKind === "totp" ? "新建验证码" : "新建笔记"}
             </button>
           </form>
 
@@ -416,10 +483,13 @@ function DevicePane({
               }
               const itemId = selected.itemId;
               const login = selected.kind === "登录";
+              const totp = selected.kind === "验证码";
               void onRun(() =>
-                login
-                  ? updateLogin(id, itemId, draftTitle, draftUsername, draftPassword, draftNotes)
-                  : updateNote(id, itemId, draftTitle, draftNotes),
+                totp
+                  ? updateTotp(id, itemId, draftTitle, draftSecret, draftNotes)
+                  : login
+                    ? updateLogin(id, itemId, draftTitle, draftUsername, draftPassword, draftNotes)
+                    : updateNote(id, itemId, draftTitle, draftNotes),
               );
             }}
           >
@@ -452,7 +522,32 @@ function DevicePane({
                     onChange={(event) => setDraftPassword(event.target.value)}
                   />
                 </label>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void onRun(async () => {
+                      const generated = await generatePassword(Number(length) || 24);
+                      setDraftPassword(generated);
+                      return hostStatus();
+                    })
+                  }
+                >
+                  生成 {length} 位密码
+                </button>
               </>
+            ) : null}
+            {selected?.kind === "验证码" ? (
+              <label>
+                密钥
+                <textarea
+                  value={draftSecret}
+                  spellCheck={false}
+                  autoComplete="off"
+                  disabled={!selected}
+                  onChange={(event) => setDraftSecret(event.target.value)}
+                />
+              </label>
             ) : null}
             <label>
               备注
@@ -486,7 +581,15 @@ function ItemRow({
     .join(" ");
   return (
     <tr className={className}>
-      <td>{item.deleted ? `已删除 ${item.title}` : item.title}</td>
+      <td>
+        <div>{item.deleted ? "已删除 " + item.title : item.title}</div>
+        {item.totpCode ? (
+          <div className="otp">
+            {item.totpCode}
+            <span> {item.totpRemaining} 秒</span>
+          </div>
+        ) : null}
+      </td>
       <td>{item.kind}</td>
       <td>{item.revision}</td>
       <td className="ids">{item.itemId}</td>

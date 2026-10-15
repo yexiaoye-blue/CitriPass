@@ -10,7 +10,7 @@ use std::error::Error as StdError;
 use thiserror::Error;
 use uuid::Uuid;
 use vault_core::{
-    AttachmentRef, Item, ItemDraft, LoginDraft, RecoveryKey, SealedItem, SealedVault,
+    AttachmentRef, Item, ItemDraft, LoginDraft, RecoveryKey, SealedItem, SealedVault, TotpDraft,
     UnlockedVault, ATTACHMENT_CHUNK_SIZE,
 };
 
@@ -272,6 +272,39 @@ impl<S: VaultStore> VaultSession<S> {
         draft: LoginDraft,
     ) -> Result<Item, SessionError<S::Error>> {
         self.vault.update_login(item_id, draft)?;
+        self.save()?;
+        Ok(self.vault.get_item(item_id)?)
+    }
+
+    /// Encrypt a standalone TOTP item and commit it with an outbox operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the secret or title is rejected, or the commit fails.
+    pub fn create_totp(&mut self, draft: TotpDraft) -> Result<Item, SessionError<S::Error>> {
+        let item = self.vault.create_item(draft.into())?;
+        self.save()?;
+        Ok(self.vault.get_item(item.item_id)?)
+    }
+
+    /// Replace a standalone TOTP item and commit the new record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item is absent, not a standalone TOTP item, or
+    /// the commit fails.
+    pub fn update_totp(
+        &mut self,
+        item_id: Uuid,
+        draft: TotpDraft,
+    ) -> Result<Item, SessionError<S::Error>> {
+        let current = self.vault.get_item(item_id)?;
+        if !current.is_standalone_totp() {
+            return Err(SessionError::Core(vault_core::Error::InvalidInput(
+                vault_core::InputError::NotTotp,
+            )));
+        }
+        self.vault.update_item(item_id, draft.into())?;
         self.save()?;
         Ok(self.vault.get_item(item_id)?)
     }
@@ -967,6 +1000,35 @@ mod tests {
         assert_eq!(item.login_password(), Some("next"));
         assert_eq!(item.notes, "desk");
         assert_eq!(session.pending_operations().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn totp_item_survives_reopen_and_matches_the_core_code() {
+        let password = password();
+        let (mut session, _) = VaultSession::create(MemoryStore::new(), &password).unwrap();
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        let totp = vault_core::Totp::new(secret);
+        let expected = totp.code_at(59).unwrap();
+        let item = session
+            .create_totp(TotpDraft {
+                title: "Door".to_string(),
+                notes: "desk".to_string(),
+                totp,
+            })
+            .unwrap();
+        assert_eq!(
+            item.totp_code_at(59).unwrap().unwrap().as_str(),
+            expected.as_str()
+        );
+        let store = session.into_store();
+        let session = VaultSession::open(store, &password).unwrap();
+        let item = session.get_item(item.item_id).unwrap();
+        assert!(item.is_standalone_totp());
+        assert_eq!(item.totp_secret(), Some(secret));
+        assert_eq!(
+            item.totp_code_at(59).unwrap().unwrap().as_str(),
+            expected.as_str()
+        );
     }
 
     #[test]

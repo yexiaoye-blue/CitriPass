@@ -252,6 +252,19 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.otp {
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+}
+
+.otp span {
+  font-weight: 450;
+  letter-spacing: 0;
+  color: var(--ink-soft);
+}
+
 table {
   width: 100%;
   margin-top: 16px;
