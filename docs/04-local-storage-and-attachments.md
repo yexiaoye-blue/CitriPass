@@ -81,6 +81,6 @@
 
 ## 6. 核心接口现状（2026-10-12）
 
-`vault-core` 已实现独立条目密文接口、Device Key 本机包装、认证条目清单的 `SealedBackup` 及固定 64 KiB STREAM 附件分块加密。文件 I/O、数据库事务、outbox/cursor 和附件包级清单由适配器负责；它们尚未实现。`SealedBackup` 不包含附件块，不能视为完整附件备份包。
+`vault-core` 已实现独立条目密文接口、Device Key 本机包装、认证条目清单的 `SealedBackup` 及固定 64 KiB STREAM 附件分块加密。`VaultSession` 负责把条目、outbox 和附件描述符提交到记录驱动，并把密文分块交给附件驱动。`SealedBackup` 仍不包含附件块，不能视为完整附件备份包。
 
 附件文件名和 MIME 通过加密条目内的 `AttachmentRef` 保存。只有全部块写入且加密 `finish()` 成功后才能提交描述符；解密也必须通过最后一块及 `finish()` 后再提交完整文件。上传续传复用已保存的密文块，不能复用加密会话重新生成块。

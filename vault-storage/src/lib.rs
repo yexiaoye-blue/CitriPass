@@ -1,21 +1,27 @@
 //! Storage ports and record contracts for CitriPass.
 //!
-//! This crate is the JDBC-like SPI between the encrypted vault domain and
-//! persistence details. It owns no database, file, network, or async-runtime
-//! implementation. Adapters implement VaultStore and keep the transaction
-//! guarantees described by VaultStoreTransaction.
+//! `VaultSession` is the protocol desktop, web, and mobile hosts call. It
+//! unlocks a vault, commits one item change with its outbox operation, and
+//! commits an attachment only after its ciphertext is complete.
+//!
+//! `VaultStore` and `AttachmentContent` are the driver ports. This crate
+//! still owns no SQLite, filesystem, HTTP, or async-runtime implementation.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod attachment;
 mod memory;
+mod session;
 
 use std::error::Error as StdError;
 
 use uuid::Uuid;
-use vault_core::{SealedItem, SealedVault};
+use vault_core::{SealedAttachment, SealedItem, SealedVault};
 
+pub use attachment::{AttachmentContent, AttachmentWriter};
 pub use memory::{MemoryStore, MemoryStoreError, MemoryTransaction};
+pub use session::{SessionError, VaultSession};
 
 /// Header and independently stored item records for one vault.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +45,23 @@ impl VaultSnapshot {
     pub fn vault_id(&self) -> Uuid {
         self.header.vault_id()
     }
+}
+
+/// Encrypted attachment descriptor stored beside the owning vault.
+#[derive(Clone, Debug)]
+pub struct AttachmentRecord {
+    /// Vault that owns the attachment.
+    pub vault_id: Uuid,
+    /// Item that references the attachment.
+    pub item_id: Uuid,
+    /// Stable attachment id.
+    pub attachment_id: Uuid,
+    /// Attachment revision.
+    pub revision: u64,
+    /// Plaintext size authenticated by the descriptor.
+    pub size: u64,
+    /// Encrypted descriptor produced by vault-core.
+    pub descriptor: SealedAttachment,
 }
 
 /// Kind of an operation waiting for remote synchronization.
@@ -122,6 +145,20 @@ pub trait VaultStoreTransaction {
     /// Replace metadata for an existing vault without touching its items.
     fn update_vault_header(&mut self, header: SealedVault) -> Result<(), Self::Error>;
 
+    /// List descriptors for one item.
+    fn list_attachments(
+        &self,
+        vault_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Vec<AttachmentRecord>, Self::Error>;
+
+    /// Insert or replace one attachment descriptor.
+    fn put_attachment(&mut self, attachment: AttachmentRecord) -> Result<(), Self::Error>;
+
+    /// Delete one attachment descriptor. Repeating the operation is allowed.
+    fn delete_attachment(&mut self, vault_id: Uuid, attachment_id: Uuid)
+        -> Result<(), Self::Error>;
+
     /// Apply an encrypted item and optional outbox operation atomically.
     fn apply_mutation(&mut self, mutation: StoreMutation) -> Result<(), Self::Error>;
 
@@ -144,6 +181,12 @@ pub trait VaultStoreTransaction {
         vault_id: Uuid,
         cursor: Option<SyncCursor>,
     ) -> Result<(), Self::Error>;
+
+    /// Read the device id recorded for outbox operations, if one exists.
+    fn local_device_id(&self, vault_id: Uuid) -> Result<Option<Uuid>, Self::Error>;
+
+    /// Record the device id used for outbox operations from this local store.
+    fn set_local_device_id(&mut self, vault_id: Uuid, device_id: Uuid) -> Result<(), Self::Error>;
 
     /// Commit all changes made through this transaction.
     fn commit(self) -> Result<(), Self::Error>;

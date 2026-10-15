@@ -5,8 +5,8 @@ use uuid::Uuid;
 use vault_core::{SealedItem, SealedVault};
 
 use crate::{
-    OperationKind, PendingOperation, StoreMutation, SyncCursor, VaultSnapshot, VaultStore,
-    VaultStoreTransaction,
+    AttachmentRecord, OperationKind, PendingOperation, StoreMutation, SyncCursor, VaultSnapshot,
+    VaultStore, VaultStoreTransaction,
 };
 
 /// Errors raised by MemoryStore.
@@ -39,6 +39,9 @@ pub enum MemoryStoreError {
     /// An incoming item conflicts at the same revision.
     #[error("item conflicts at its current revision: {0}")]
     RevisionConflict(Uuid),
+    /// An attachment descriptor does not match its indexed identity.
+    #[error("attachment descriptor identity does not match its record")]
+    AttachmentIdentityMismatch,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -46,6 +49,8 @@ struct MemoryState {
     vaults: BTreeMap<Uuid, VaultSnapshot>,
     outbox: BTreeMap<Uuid, PendingOperation>,
     cursors: HashMap<Uuid, SyncCursor>,
+    attachments: BTreeMap<(Uuid, Uuid), AttachmentRecord>,
+    devices: HashMap<Uuid, Uuid>,
 }
 
 /// In-memory implementation used by protocol contract tests and small hosts.
@@ -121,6 +126,66 @@ impl<'a> VaultStoreTransaction for MemoryTransaction<'a> {
             .get_mut(&vault_id)
             .ok_or(MemoryStoreError::VaultNotFound(vault_id))?;
         snapshot.header = header;
+        Ok(())
+    }
+
+    fn local_device_id(&self, vault_id: Uuid) -> Result<Option<Uuid>, Self::Error> {
+        if !self.working.vaults.contains_key(&vault_id) {
+            return Err(MemoryStoreError::VaultNotFound(vault_id));
+        }
+        Ok(self.working.devices.get(&vault_id).copied())
+    }
+
+    fn set_local_device_id(&mut self, vault_id: Uuid, device_id: Uuid) -> Result<(), Self::Error> {
+        if !self.working.vaults.contains_key(&vault_id) {
+            return Err(MemoryStoreError::VaultNotFound(vault_id));
+        }
+        self.working.devices.insert(vault_id, device_id);
+        Ok(())
+    }
+
+    fn list_attachments(
+        &self,
+        vault_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Vec<AttachmentRecord>, Self::Error> {
+        if !self.working.vaults.contains_key(&vault_id) {
+            return Err(MemoryStoreError::VaultNotFound(vault_id));
+        }
+        Ok(self
+            .working
+            .attachments
+            .values()
+            .filter(|attachment| attachment.vault_id == vault_id && attachment.item_id == item_id)
+            .cloned()
+            .collect())
+    }
+
+    fn put_attachment(&mut self, attachment: AttachmentRecord) -> Result<(), Self::Error> {
+        if !self.working.vaults.contains_key(&attachment.vault_id)
+            || attachment.descriptor.vault_id() != attachment.vault_id
+            || attachment.descriptor.item_id() != attachment.item_id
+            || attachment.descriptor.attachment_id() != attachment.attachment_id
+            || attachment.descriptor.revision() != attachment.revision
+            || attachment.descriptor.size() != attachment.size
+        {
+            return Err(MemoryStoreError::AttachmentIdentityMismatch);
+        }
+        self.working
+            .attachments
+            .insert((attachment.vault_id, attachment.attachment_id), attachment);
+        Ok(())
+    }
+
+    fn delete_attachment(
+        &mut self,
+        vault_id: Uuid,
+        attachment_id: Uuid,
+    ) -> Result<(), Self::Error> {
+        if !self.working.vaults.contains_key(&vault_id) {
+            return Err(MemoryStoreError::VaultNotFound(vault_id));
+        }
+        self.working.attachments.remove(&(vault_id, attachment_id));
         Ok(())
     }
 

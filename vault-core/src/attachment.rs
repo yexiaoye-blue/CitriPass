@@ -53,6 +53,11 @@ pub struct AttachmentDecryptor {
 }
 
 impl SealedAttachment {
+    /// Vault that owns the attachment.
+    pub fn vault_id(&self) -> Uuid {
+        self.vault_id
+    }
+
     /// Attachment id.
     pub fn attachment_id(&self) -> Uuid {
         self.attachment_id

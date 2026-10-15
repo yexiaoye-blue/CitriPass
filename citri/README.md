@@ -1,6 +1,6 @@
 # citri
 
-CitriPass 的本机命令行。它通过 vault-storage-sqlite 使用本地 SQLite 数据库，保存已经密封的 vault header、item records、tombstone、outbox 和 cursor。SQLite 列只保存密文和同步元数据，不保存条目明文。
+CitriPass 的本机命令行，用来测试本地协议。它打开 SQLite 驱动，然后把创建、解锁和保存交给 `vault-storage::VaultSession`。SQLite 列只保存密文和同步元数据，不保存条目明文。
 
 当前不会自动迁移旧的 CPV1/CPI1 文件；旧文件需要单独设计迁移工具后再导入 SQLite。
 

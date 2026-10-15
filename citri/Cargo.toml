@@ -18,6 +18,7 @@ vault-storage-sqlite = { path = "../vault-storage-sqlite" }
 
 [dev-dependencies]
 keepass = { version = "0.15", features = ["save_kdbx4"] }
+vault-attachment-store = { path = "../vault-attachment-store" }
 # Same patched keepass as vault-exchange. Patches apply only from the package
 # being built, so the binary needs this even though the library also has it.
 [patch.crates-io]

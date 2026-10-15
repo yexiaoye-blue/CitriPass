@@ -6,6 +6,8 @@ publish = false
 description = "Storage ports and record contracts for CitriPass"
 
 [dependencies]
+rand = "0.8"
 thiserror = "2"
 uuid = "1"
 vault-core = { path = "../vault-core" }
+zeroize = "1"

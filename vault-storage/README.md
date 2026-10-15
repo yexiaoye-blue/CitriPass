@@ -1,12 +1,15 @@
 # vault-storage
 
-vault-storage is the storage SPI for CitriPass. It defines the records and
-transaction boundary that local storage adapters implement.
+vault-storage is the local vault protocol used by CitriPass clients.
+`VaultSession` creates and unlocks a vault, commits each changed item with an
+outbox operation, and publishes an attachment only after its ciphertext is
+complete.
 
-The crate intentionally has no SQLite, filesystem, HTTP, or async-runtime
-dependency. vault-storage-sqlite can implement the same ports later, while
-IndexedDB and an in-memory test adapter can use the same contract.
+SQLite and filesystem chunks are drivers behind `VaultStore` and
+`AttachmentContent`. This crate does not depend on SQLite, the filesystem,
+HTTP, or an async runtime. `MemoryStore` is the in-memory driver used to test
+the protocol.
 
-Remote synchronization is a separate boundary. It shares encrypted records,
-operation ids, revisions, tombstones, and cursors with this crate, but it does
-not implement the local transaction interface directly.
+Remote synchronization is still a separate boundary. It can reuse the
+encrypted records, operation ids, revisions, tombstones, and cursors stored
+here, but it does not replace this protocol.

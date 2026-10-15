@@ -63,6 +63,15 @@ impl From<vault_storage_sqlite::SqliteStoreError> for Error {
     }
 }
 
+impl From<vault_storage::SessionError<vault_storage_sqlite::SqliteStoreError>> for Error {
+    fn from(error: vault_storage::SessionError<vault_storage_sqlite::SqliteStoreError>) -> Self {
+        match error {
+            vault_storage::SessionError::VaultCount => Self::UnexpectedRecord,
+            other => Self::Message(other.to_string()),
+        }
+    }
+}
+
 impl<E> From<vault_exchange::ApplyError<E>> for Error
 where
     E: std::error::Error,
