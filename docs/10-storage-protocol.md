@@ -61,7 +61,7 @@ IndexedDB 可以实现同一组协议。SQLCipher 或系统磁盘加密属于本
 
 远端同步不直接实现 VaultStore。本地存储保证低延迟、离线访问和本地原子事务；远端同步还需要认证、网络重试、push/pull、cursor、冲突和幂等。
 
-vault-sync 实现条目同步端口。它读取本协议已经保存的 outbox、revision 和 cursor，通过 SyncTransport 推送和拉取密文。第一版传输是内存服务器，用来固定规则；HTTP 传输还没有做。附件上传和下载也不在这一版里。
+vault-sync 实现条目同步端口。它读取本协议已经保存的 outbox、revision 和 cursor，通过 SyncTransport 推送和拉取密文。内存服务器用来固定规则。sync-service 用 PostgreSQL 提供同样的推送、拉取、游标和冲突行为，见 [条目同步服务](./11-sync-service.md)。Rust HTTP 传输和附件上传还没有做。
 
 同步端口复用这些数据结构：
 
