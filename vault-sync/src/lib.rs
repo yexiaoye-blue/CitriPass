@@ -8,6 +8,7 @@
 #![deny(missing_docs)]
 
 mod engine;
+mod http;
 mod memory;
 
 use std::error::Error as StdError;
@@ -17,6 +18,7 @@ use vault_core::SealedItem;
 use vault_storage::{PendingOperation, SyncCursor};
 
 pub use engine::{sync_items, SyncError, SyncReport};
+pub use http::{HttpSyncError, HttpSyncTransport};
 pub use memory::{MemoryServer, MemorySyncError};
 
 /// Port implemented by a remote item sync service.
