@@ -62,4 +62,4 @@ vault-sync-http     HTTP 同步实现
 
 ## 5. 当前限制
 
-本协议暂不定义 SQLite schema、附件文件布局、HTTP 请求格式或冲突合并策略。它们分别属于本地适配器、附件存储和同步协议的后续功能。
+本协议暂不定义 HTTP 请求格式或冲突合并策略。SQLite schema 由 vault-storage-sqlite 负责，附件分块文件由 vault-attachment-store 负责。

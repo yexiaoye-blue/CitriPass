@@ -8,6 +8,7 @@ CitriPass 是本地优先的密码与凭据管理器。主密码只在客户端�
 - [vault-core](vault-core/README.md)：跨端共用的 Rust 加密核心。保险库记录是二进制格式，核心不访问文件、时钟、网络或系统密钥库。
 - [vault-storage](vault-storage/README.md)：存储 SPI，定义本地事务、密文条目、outbox 和 cursor 的适配器协议。
 - [vault-storage-sqlite](vault-storage-sqlite/README.md)：SQLite 本地存储适配器，保存密文记录和同步元数据。
+- [vault-attachment-store](vault-attachment-store/README.md)：本地加密附件分块文件适配器。
 - [vault-exchange](vault-exchange/README.md)：其他格式和保险库之间的导入、导出。第一版可以读入 KeePass KDBX。
 - [citri](citri/README.md)：本机命令行。用核心记录创建保险库、管理条目，并导入 KDBX。
 
