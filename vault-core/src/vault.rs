@@ -285,6 +285,44 @@ impl UnlockedVault {
         self.update_item(item_id, next)
     }
 
+    /// Create a folder and place it in `parent_id`.
+    ///
+    /// `None` creates a root folder. The item's containing folder is the same parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the title is empty or a parent id is nil.
+    pub fn create_folder(&mut self, title: String, parent_id: Option<Uuid>) -> Result<Item> {
+        let mut draft = ItemDraft::new(title, ItemData::Folder { parent_id });
+        draft.folder_id = parent_id;
+        self.create_item(draft)
+    }
+
+    /// Replace a folder's title and parent. Favorite, notes, and tags stay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item is missing, deleted, or not a folder.
+    pub fn update_folder(
+        &mut self,
+        item_id: Uuid,
+        title: String,
+        parent_id: Option<Uuid>,
+    ) -> Result<Item> {
+        let current = self.get_item(item_id)?;
+        if current.deleted {
+            return Err(Error::InvalidInput(InputError::DeletedItem));
+        }
+        if !current.is_folder() {
+            return Err(Error::InvalidInput(InputError::NotFolder));
+        }
+        let mut next = current.content.clone();
+        next.title = title;
+        next.folder_id = parent_id;
+        next.data = ItemData::Folder { parent_id };
+        self.update_item(item_id, next)
+    }
+
     /// Generate the current HOTP code and store the next counter.
     ///
     /// The code is returned only after the new counter is stored. A second call

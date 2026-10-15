@@ -309,6 +309,44 @@ impl<S: VaultStore> VaultSession<S> {
         Ok(self.vault.get_item(item_id)?)
     }
 
+    /// Encrypt a folder and commit it with an outbox operation.
+    ///
+    /// `parent_id` is absent for a root folder. A parent must already be a live
+    /// folder, and the new folder must not become its own ancestor. The
+    /// containing folder id matches that parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the title or parent is rejected, or the commit fails.
+    pub fn create_folder(
+        &mut self,
+        title: String,
+        parent_id: Option<Uuid>,
+    ) -> Result<Item, SessionError<S::Error>> {
+        self.ensure_folder_parent(parent_id, None)?;
+        let item = self.vault.create_folder(title, parent_id)?;
+        self.save()?;
+        Ok(self.vault.get_item(item.item_id)?)
+    }
+
+    /// Replace a folder title and parent, then commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item is not a live folder, the parent would
+    /// cycle, or the commit fails.
+    pub fn update_folder(
+        &mut self,
+        item_id: Uuid,
+        title: String,
+        parent_id: Option<Uuid>,
+    ) -> Result<Item, SessionError<S::Error>> {
+        self.ensure_folder_parent(parent_id, Some(item_id))?;
+        self.vault.update_folder(item_id, title, parent_id)?;
+        self.save()?;
+        Ok(self.vault.get_item(item_id)?)
+    }
+
     /// Replace an item and commit the new record with an outbox operation.
     ///
     /// # Errors
@@ -379,6 +417,46 @@ impl<S: VaultStore> VaultSession<S> {
             .change_master_password(old_password, new_password)?;
         self.save()?;
         Ok(())
+    }
+
+    fn ensure_folder_parent(
+        &self,
+        parent_id: Option<Uuid>,
+        item_id: Option<Uuid>,
+    ) -> Result<(), SessionError<S::Error>> {
+        let Some(mut cursor) = parent_id else {
+            return Ok(());
+        };
+        if cursor.is_nil() {
+            return Err(SessionError::Core(vault_core::Error::InvalidInput(
+                vault_core::InputError::InvalidFolderId,
+            )));
+        }
+        for _ in 0..1024 {
+            if item_id == Some(cursor) {
+                return Err(SessionError::Core(vault_core::Error::InvalidInput(
+                    vault_core::InputError::FolderCycle,
+                )));
+            }
+            let parent = self.vault.get_item(cursor)?;
+            if parent.deleted {
+                return Err(SessionError::Core(vault_core::Error::InvalidInput(
+                    vault_core::InputError::DeletedItem,
+                )));
+            }
+            if !parent.is_folder() {
+                return Err(SessionError::Core(vault_core::Error::InvalidInput(
+                    vault_core::InputError::NotFolder,
+                )));
+            }
+            match parent.folder_parent_id() {
+                Some(next) => cursor = next,
+                None => return Ok(()),
+            }
+        }
+        Err(SessionError::Core(vault_core::Error::InvalidInput(
+            vault_core::InputError::FolderCycle,
+        )))
     }
 
     /// Commit header and item records that differ from the last durable state.
@@ -1128,5 +1206,93 @@ mod tests {
             .is_empty());
         assert!(content.files.borrow().is_empty());
         assert_eq!(session.pending_operations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn folder_parent_favorite_and_search_survive_reopen() {
+        let password = password();
+        let (mut session, _) = VaultSession::create(MemoryStore::new(), &password).unwrap();
+        let work = session.create_folder("Work".to_string(), None).unwrap();
+        assert!(work.is_folder());
+        assert_eq!(work.folder_parent_id(), None);
+        assert_eq!(work.folder_id, None);
+        let mail = session
+            .create_folder("Mail".to_string(), Some(work.item_id))
+            .unwrap();
+        assert_eq!(mail.folder_parent_id(), Some(work.item_id));
+        assert_eq!(mail.folder_id, Some(work.item_id));
+        session
+            .update_folder(mail.item_id, "Inbox".to_string(), Some(work.item_id))
+            .unwrap();
+
+        let login = session
+            .create_login(LoginDraft {
+                title: "Desk".to_string(),
+                username: "c@d.e".to_string(),
+                password: "secret".to_string(),
+                notes: "kept".to_string(),
+            })
+            .unwrap();
+        let mut placed = login.content.clone();
+        placed.favorite = true;
+        placed.folder_id = Some(work.item_id);
+        session.update_item(login.item_id, placed).unwrap();
+
+        let store = session.into_store();
+        let session = VaultSession::open(store, &password).unwrap();
+        let inbox = session.get_item(mail.item_id).unwrap();
+        assert_eq!(inbox.title, "Inbox");
+        assert!(inbox.is_folder());
+        assert_eq!(inbox.folder_parent_id(), Some(work.item_id));
+        assert_eq!(inbox.folder_id, Some(work.item_id));
+        let login = session.get_item(login.item_id).unwrap();
+        assert!(login.favorite);
+        assert_eq!(login.folder_id, Some(work.item_id));
+        assert_eq!(login.login_username(), Some("c@d.e"));
+        assert_eq!(login.login_password(), Some("secret"));
+        let found = session.search("c@d.e").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].item_id, login.item_id);
+        assert!(found[0].favorite);
+    }
+
+    #[test]
+    fn folder_cycle_and_non_folder_are_rejected_and_reopen_unchanged() {
+        let password = password();
+        let (mut session, _) = VaultSession::create(MemoryStore::new(), &password).unwrap();
+        let root = session.create_folder("Root".to_string(), None).unwrap();
+        let child = session
+            .create_folder("Child".to_string(), Some(root.item_id))
+            .unwrap();
+        let cycle = session
+            .update_folder(root.item_id, "Root".to_string(), Some(child.item_id))
+            .unwrap_err();
+        assert!(matches!(
+            cycle,
+            SessionError::Core(vault_core::Error::InvalidInput(
+                vault_core::InputError::FolderCycle
+            ))
+        ));
+        let note = session
+            .create_item(ItemDraft::new("Note", ItemData::SecureNote))
+            .unwrap();
+        let rejected = session
+            .update_folder(note.item_id, "No".to_string(), None)
+            .unwrap_err();
+        assert!(matches!(
+            rejected,
+            SessionError::Core(vault_core::Error::InvalidInput(
+                vault_core::InputError::NotFolder
+            ))
+        ));
+
+        let store = session.into_store();
+        let session = VaultSession::open(store, &password).unwrap();
+        let root = session.get_item(root.item_id).unwrap();
+        assert_eq!(root.title, "Root");
+        assert_eq!(root.folder_parent_id(), None);
+        let note = session.get_item(note.item_id).unwrap();
+        assert_eq!(note.title, "Note");
+        assert!(!note.is_folder());
     }
 }

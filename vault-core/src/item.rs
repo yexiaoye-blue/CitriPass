@@ -210,6 +210,23 @@ impl ItemDraft {
         matches!(self.data, ItemData::Totp { .. })
     }
 
+    /// Whether this draft is a folder.
+    pub fn is_folder(&self) -> bool {
+        matches!(self.data, ItemData::Folder { .. })
+    }
+
+    /// Parent of a folder draft.
+    ///
+    /// `None` means the folder is at the vault root, or this draft is not a
+    /// folder. [`is_folder`](Self::is_folder) tells those apart. This is not
+    /// the containing folder stored in [`folder_id`](Self::folder_id).
+    pub fn folder_parent_id(&self) -> Option<Uuid> {
+        match &self.data {
+            ItemData::Folder { parent_id } => *parent_id,
+            _ => None,
+        }
+    }
+
     /// Base32 secret for a standalone TOTP item or a login that carries TOTP.
     pub fn totp_secret(&self) -> Option<&str> {
         self.totp().map(|totp| totp.secret.as_str())

@@ -17,3 +17,6 @@ here, but it does not replace this protocol.
 Hosts construct a driver at the composition root and pass it to `VaultSession`.
 Product code uses the methods that commit themselves. `vault_mut` followed by
 `save` exists for the command-line test host and is not a second protocol.
+Folder items are created with `create_folder` and replaced with `update_folder`.
+Those methods commit themselves. The folder parent inside `ItemData` stays private
+to vault-core; `folder_id` and `favorite` remain public fields on `ItemDraft`.

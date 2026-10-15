@@ -84,6 +84,10 @@ pub enum InputError {
     NotHotp,
     /// A TOTP operation was used on another item kind.
     NotTotp,
+    /// A folder operation was used on another item kind.
+    NotFolder,
+    /// A folder would contain itself through its parents.
+    FolderCycle,
     /// A vault id is nil or does not match the open vault.
     InvalidVaultId,
     /// An item id is nil.
@@ -136,6 +140,8 @@ impl fmt::Display for InputError {
             Self::NotLoginItem => f.write_str("Item must be a login item"),
             Self::NotHotp => f.write_str("Item must contain an HOTP"),
             Self::NotTotp => f.write_str("Item must be a standalone TOTP item"),
+            Self::NotFolder => f.write_str("Item must be a folder"),
+            Self::FolderCycle => f.write_str("Folder cannot contain itself"),
             Self::InvalidVaultId => f.write_str("Vault ID must not be nil"),
             Self::InvalidItemId => f.write_str("Item ID must not be nil"),
             Self::InvalidDeviceId => f.write_str("Device ID must not be nil"),
