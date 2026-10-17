@@ -1,7 +1,12 @@
 //! Plaintext items and the versioned body layout.
 //!
-//! Schema 1 is a sequence of big-endian fields, not a self-describing document.
-//! Unknown schema numbers are rejected.
+//! Schema 1 and schema 2 are sequences of big-endian fields, not self-describing
+//! documents. Writers emit schema 2. Readers still accept schema 1: its one login
+//! password becomes a single record named [`LEGACY_LOGIN_PASSWORD_NAME`], and an
+//! empty password is kept. Schema 2 replaces only that password field with a count
+//! and name/password pairs. Tags, custom fields, attachments, URLs, login OTP, and
+//! every other item payload keep the schema 1 layout. Unknown schema numbers are
+//! rejected.
 
 use crate::codec::{Buf, Cursor};
 use crate::limits::{MAX_METADATA, MAX_PLAINTEXT};
@@ -10,7 +15,8 @@ use crate::{Error, InputError, Result};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-const SCHEMA: u16 = 1;
+const SCHEMA_V1: u16 = 1;
+const SCHEMA_V2: u16 = 2;
 const KIND_LOGIN: u16 = 1;
 const KIND_NOTE: u16 = 2;
 const KIND_FOLDER: u16 = 3;
@@ -19,6 +25,18 @@ const KIND_CARD: u16 = 5;
 const KIND_IDENTITY: u16 = 6;
 const KIND_HOTP: u16 = 7;
 
+/// Name assigned to the single password stored by a schema 1 login.
+pub const LEGACY_LOGIN_PASSWORD_NAME: &str = "密码";
+
+/// One named password on a login. The name and password are wiped on drop.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct LoginPassword {
+    /// Display name. It must contain a non-whitespace character. Duplicates are allowed.
+    pub name: String,
+    /// Password value. Empty is allowed.
+    pub password: String,
+}
+
 /// Login fields copied into an item. The strings are wiped on drop.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct LoginDraft {
@@ -26,8 +44,8 @@ pub struct LoginDraft {
     pub title: String,
     /// Login username.
     pub username: String,
-    /// Login password.
-    pub password: String,
+    /// Named passwords. Empty is allowed. This list replaces any stored list in full.
+    pub passwords: Vec<LoginPassword>,
     /// Freeform notes.
     pub notes: String,
 }
@@ -35,12 +53,12 @@ pub struct LoginDraft {
 /// Secret payload stored inside one item.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub enum ItemData {
-    /// Username, password, URLs, and an optional one-time password.
+    /// Username, named passwords, URLs, and an optional one-time password.
     Login {
         /// Login username.
         username: String,
-        /// Login password.
-        password: String,
+        /// Named passwords. The list may be empty.
+        passwords: Vec<LoginPassword>,
         /// Associated URLs.
         urls: Vec<String>,
         /// Optional TOTP or HOTP stored with the login.
@@ -163,6 +181,7 @@ impl ItemDraft {
         if self.tags.len() > MAX_METADATA
             || self.custom_fields.len() > MAX_METADATA
             || self.attachments.len() > MAX_METADATA
+            || login_password_count(&self.data) > MAX_METADATA
         {
             return Err(Error::InvalidInput(InputError::TooManyMetadataEntries {
                 max_entries: MAX_METADATA,
@@ -181,7 +200,17 @@ impl ItemDraft {
             } if id.is_nil() => {
                 return Err(Error::InvalidInput(InputError::InvalidFolderId));
             }
-            ItemData::Login { otp: Some(otp), .. } => otp.validate()?,
+            ItemData::Login { passwords, otp, .. } => {
+                if passwords
+                    .iter()
+                    .any(|password| password.name.trim().is_empty())
+                {
+                    return Err(Error::InvalidInput(InputError::EmptyPasswordName));
+                }
+                if let Some(otp) = otp {
+                    otp.validate()?;
+                }
+            }
             ItemData::Totp { totp } => totp.validate()?,
             ItemData::Hotp { hotp } => hotp.validate()?,
             _ => {}
@@ -189,12 +218,21 @@ impl ItemDraft {
         Ok(())
     }
 
-    /// Login password, if this draft is a login.
-    pub fn login_password(&self) -> Option<&str> {
+    /// Named passwords, if this draft is a login.
+    pub fn login_passwords(&self) -> Option<&[LoginPassword]> {
         match &self.data {
-            ItemData::Login { password, .. } => Some(password),
+            ItemData::Login { passwords, .. } => Some(passwords),
             _ => None,
         }
+    }
+
+    /// First login password, if this draft is a login and has one.
+    ///
+    /// The full list is [`login_passwords`](Self::login_passwords).
+    pub fn login_password(&self) -> Option<&str> {
+        self.login_passwords()
+            .and_then(|passwords| passwords.first())
+            .map(|password| password.password.as_str())
     }
 
     /// Login username, if this draft is a login.
@@ -266,7 +304,7 @@ impl From<LoginDraft> for ItemDraft {
             std::mem::take(&mut draft.title),
             ItemData::Login {
                 username: std::mem::take(&mut draft.username),
-                password: std::mem::take(&mut draft.password),
+                passwords: std::mem::take(&mut draft.passwords),
                 urls: Vec::new(),
                 otp: None,
             },
@@ -337,11 +375,12 @@ macro_rules! redacted {
     )*};
 }
 redacted!(LoginDraft, ItemDraft, ItemData, CustomField, AttachmentRef);
+redacted!(LoginPassword);
 
 pub(crate) fn encode_body(draft: &ItemDraft) -> Result<Zeroizing<Vec<u8>>> {
     draft.validate()?;
     let mut buf = Buf::with_limit(MAX_PLAINTEXT);
-    buf.u16(SCHEMA)?;
+    buf.u16(SCHEMA_V2)?;
     write_common(&mut buf, draft)?;
     write_payload(&mut buf, &draft.data)?;
     Ok(Zeroizing::new(buf.finish()))
@@ -358,10 +397,10 @@ pub(crate) fn decode_body(
     }
     let mut cursor = Cursor::new(bytes);
     let schema = cursor.u16().map_err(|_| Error::Integrity)?;
-    if schema != SCHEMA {
+    if schema != SCHEMA_V1 && schema != SCHEMA_V2 {
         return Err(Error::UnsupportedFormat);
     }
-    let draft = read_draft(&mut cursor).map_err(stored)?;
+    let draft = read_draft(&mut cursor, schema).map_err(stored)?;
     cursor.finish().map_err(|_| Error::Integrity)?;
     draft.validate().map_err(|_| Error::Integrity)?;
     Ok(Item {
@@ -419,12 +458,12 @@ fn write_payload(buf: &mut Buf, data: &ItemData) -> Result<()> {
     match data {
         ItemData::Login {
             username,
-            password,
+            passwords,
             urls,
             otp,
         } => {
             buf.str(username)?;
-            buf.str(password)?;
+            write_password_list(buf, passwords)?;
             buf.u16(u16::try_from(urls.len()).map_err(|_| Error::LimitExceeded)?)?;
             for url in urls {
                 buf.str(url)?;
@@ -472,6 +511,22 @@ fn write_payload(buf: &mut Buf, data: &ItemData) -> Result<()> {
     Ok(())
 }
 
+fn write_password_list(buf: &mut Buf, passwords: &[LoginPassword]) -> Result<()> {
+    buf.u16(u16::try_from(passwords.len()).map_err(|_| Error::LimitExceeded)?)?;
+    for password in passwords {
+        buf.str(&password.name)?;
+        buf.str(&password.password)?;
+    }
+    Ok(())
+}
+
+fn login_password_count(data: &ItemData) -> usize {
+    match data {
+        ItemData::Login { passwords, .. } => passwords.len(),
+        _ => 0,
+    }
+}
+
 fn write_totp(buf: &mut Buf, totp: &Totp) -> Result<()> {
     buf.str(&totp.secret)?;
     write_algorithm(buf, totp.algorithm)?;
@@ -504,7 +559,7 @@ fn write_uuid(buf: &mut Buf, id: Option<Uuid>) -> Result<()> {
     }
 }
 
-fn read_draft(cursor: &mut Cursor<'_>) -> Result<ItemDraft> {
+fn read_draft(cursor: &mut Cursor<'_>, schema: u16) -> Result<ItemDraft> {
     let kind = cursor.u16()?;
     let title = cursor.str()?;
     let notes = cursor.str()?;
@@ -551,7 +606,7 @@ fn read_draft(cursor: &mut Cursor<'_>) -> Result<ItemDraft> {
             media_type: cursor.str()?,
         });
     }
-    let data = read_payload(cursor, kind)?;
+    let data = read_payload(cursor, kind, schema)?;
     Ok(ItemDraft {
         title,
         notes,
@@ -564,11 +619,11 @@ fn read_draft(cursor: &mut Cursor<'_>) -> Result<ItemDraft> {
     })
 }
 
-fn read_payload(cursor: &mut Cursor<'_>, kind: u16) -> Result<ItemData> {
+fn read_payload(cursor: &mut Cursor<'_>, kind: u16, schema: u16) -> Result<ItemData> {
     match kind {
         KIND_LOGIN => {
             let username = cursor.str()?;
-            let password = cursor.str()?;
+            let passwords = read_password_list(cursor, schema)?;
             let url_count = cursor.u16()? as usize;
             if url_count > MAX_METADATA {
                 return Err(Error::LimitExceeded);
@@ -585,7 +640,7 @@ fn read_payload(cursor: &mut Cursor<'_>, kind: u16) -> Result<ItemData> {
             };
             Ok(ItemData::Login {
                 username,
-                password,
+                passwords,
                 urls,
                 otp,
             })
@@ -612,6 +667,33 @@ fn read_payload(cursor: &mut Cursor<'_>, kind: u16) -> Result<ItemData> {
             phone: cursor.str()?,
             address: cursor.str()?,
         }),
+        _ => Err(Error::UnsupportedFormat),
+    }
+}
+
+fn read_password_list(cursor: &mut Cursor<'_>, schema: u16) -> Result<Vec<LoginPassword>> {
+    match schema {
+        SCHEMA_V1 => {
+            let password = cursor.str()?;
+            Ok(vec![LoginPassword {
+                name: LEGACY_LOGIN_PASSWORD_NAME.to_string(),
+                password,
+            }])
+        }
+        SCHEMA_V2 => {
+            let count = cursor.u16()? as usize;
+            if count > MAX_METADATA {
+                return Err(Error::LimitExceeded);
+            }
+            let mut passwords = Vec::with_capacity(count);
+            for _ in 0..count {
+                passwords.push(LoginPassword {
+                    name: cursor.str()?,
+                    password: cursor.str()?,
+                });
+            }
+            Ok(passwords)
+        }
         _ => Err(Error::UnsupportedFormat),
     }
 }
@@ -697,7 +779,10 @@ mod tests {
         let login_password = format!("login-test-{}", std::process::id());
         let login = roundtrip(ItemData::Login {
             username: "user".into(),
-            password: login_password,
+            passwords: vec![LoginPassword {
+                name: "密码".into(),
+                password: login_password,
+            }],
             urls: vec!["https://example.test".into()],
             otp: Some(Otp::Totp(Totp::new(SECRET))),
         });
@@ -777,7 +862,10 @@ mod tests {
             "Title",
             ItemData::Login {
                 username: "user".into(),
-                password: "secret".into(),
+                passwords: vec![LoginPassword {
+                    name: "密码".into(),
+                    password: "secret".into(),
+                }],
                 urls: vec!["https://example.test".into()],
                 otp: None,
             },
@@ -793,11 +881,170 @@ mod tests {
     fn unknown_schema_is_rejected() {
         let mut bytes = encode_body(&ItemDraft::new("Title", ItemData::SecureNote)).unwrap();
         bytes[0] = 0;
-        bytes[1] = 2;
+        bytes[1] = 3;
         assert_eq!(
             decode_body(&bytes, Uuid::from_u128(1), 1, false).unwrap_err(),
             Error::UnsupportedFormat
         );
+    }
+
+    #[test]
+    fn schema1_login_password_becomes_one_named_record() {
+        let empty = decode_body(&schema1_login(""), Uuid::from_u128(1), 1, false).unwrap();
+        match &empty.data {
+            ItemData::Login { passwords, .. } => {
+                assert_eq!(passwords.len(), 1);
+                assert_eq!(passwords[0].name, LEGACY_LOGIN_PASSWORD_NAME);
+                assert_eq!(passwords[0].password, "");
+            }
+            _ => panic!("login"),
+        }
+
+        let bytes = schema1_login("secret");
+        let item = decode_body(&bytes, Uuid::from_u128(1), 4, false).unwrap();
+        assert_eq!(item.login_password(), Some("secret"));
+        assert_eq!(item.custom_fields.len(), 1);
+        assert_eq!(item.custom_fields[0].name, "PIN");
+        assert!(item.custom_fields[0].concealed);
+        match &item.data {
+            ItemData::Login {
+                urls,
+                otp,
+                passwords,
+                ..
+            } => {
+                assert_eq!(urls, &["https://example.test".to_string()]);
+                assert!(matches!(otp, Some(Otp::Totp(_))));
+                assert_eq!(passwords[0].name, LEGACY_LOGIN_PASSWORD_NAME);
+            }
+            _ => panic!("login"),
+        }
+        let rewritten = encode_body(&item.content).unwrap();
+        assert_eq!(&rewritten[..2], &[0, 2]);
+        assert_eq!(bytes, schema1_login("secret"));
+        let migrated = decode_body(&rewritten, item.item_id, item.revision, false).unwrap();
+        assert_eq!(migrated.content, item.content);
+    }
+
+    #[test]
+    fn schema2_login_roundtrips_zero_one_and_many_passwords() {
+        roundtrip(ItemData::Login {
+            username: "user".into(),
+            passwords: Vec::new(),
+            urls: vec!["https://example.test".into()],
+            otp: Some(Otp::Totp(Totp::new(SECRET))),
+        });
+        roundtrip(ItemData::Login {
+            username: "user".into(),
+            passwords: vec![LoginPassword {
+                name: "密码".into(),
+                password: String::new(),
+            }],
+            urls: Vec::new(),
+            otp: None,
+        });
+        let many = roundtrip(ItemData::Login {
+            username: "user".into(),
+            passwords: vec![
+                LoginPassword {
+                    name: "密码".into(),
+                    password: "one".into(),
+                },
+                LoginPassword {
+                    name: "密码".into(),
+                    password: String::new(),
+                },
+                LoginPassword {
+                    name: "备用".into(),
+                    password: "two".into(),
+                },
+            ],
+            urls: vec!["https://example.test".into()],
+            otp: None,
+        });
+        assert_eq!(many.custom_fields[0].value, "value");
+        assert_eq!(many.login_passwords().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn schema2_note_changes_only_the_version_word() {
+        let current = encode_body(&ItemDraft::new("Title", ItemData::SecureNote)).unwrap();
+        let mut legacy = current.clone();
+        legacy[0] = 0;
+        legacy[1] = 1;
+        let item = decode_body(&legacy, Uuid::from_u128(1), 1, false).unwrap();
+        assert!(matches!(item.data, ItemData::SecureNote));
+        let rewritten = encode_body(&item.content).unwrap();
+        assert_eq!(&rewritten[..2], &[0, 2]);
+        assert_eq!(rewritten[2..], current[2..]);
+        assert_eq!(legacy[2..], current[2..]);
+    }
+
+    #[test]
+    fn blank_password_name_and_too_many_passwords_are_rejected() {
+        let blank = ItemDraft::new(
+            "Title",
+            ItemData::Login {
+                username: String::new(),
+                passwords: vec![LoginPassword {
+                    name: "   ".into(),
+                    password: "secret".into(),
+                }],
+                urls: Vec::new(),
+                otp: None,
+            },
+        );
+        assert_eq!(
+            encode_body(&blank).unwrap_err(),
+            Error::InvalidInput(InputError::EmptyPasswordName)
+        );
+
+        let mut too_many = Vec::new();
+        for index in 0..=MAX_METADATA {
+            too_many.push(LoginPassword {
+                name: format!("密码{index}"),
+                password: String::new(),
+            });
+        }
+        let overflow = ItemDraft::new(
+            "Title",
+            ItemData::Login {
+                username: String::new(),
+                passwords: too_many,
+                urls: Vec::new(),
+                otp: None,
+            },
+        );
+        assert!(matches!(
+            encode_body(&overflow).unwrap_err(),
+            Error::InvalidInput(InputError::TooManyMetadataEntries { .. })
+        ));
+    }
+
+    fn schema1_login(password: &str) -> Vec<u8> {
+        let mut buf = Buf::with_limit(MAX_PLAINTEXT);
+        buf.u16(SCHEMA_V1).unwrap();
+        buf.u16(KIND_LOGIN).unwrap();
+        buf.str("Old").unwrap();
+        buf.str("note").unwrap();
+        buf.u8(0).unwrap();
+        buf.u8(0).unwrap();
+        buf.u16(0).unwrap();
+        buf.u16(1).unwrap();
+        buf.str("PIN").unwrap();
+        buf.str("1234").unwrap();
+        buf.u8(1).unwrap();
+        buf.u16(0).unwrap();
+        buf.str("ada").unwrap();
+        buf.str(password).unwrap();
+        buf.u16(1).unwrap();
+        buf.str("https://example.test").unwrap();
+        buf.u8(1).unwrap();
+        buf.str(SECRET).unwrap();
+        buf.u16(1).unwrap();
+        buf.u8(6).unwrap();
+        buf.u32(30).unwrap();
+        buf.finish()
     }
 
     #[test]
@@ -807,7 +1054,10 @@ mod tests {
             "Token",
             ItemData::Login {
                 username: String::new(),
-                password: String::new(),
+                passwords: vec![LoginPassword {
+                    name: LEGACY_LOGIN_PASSWORD_NAME.into(),
+                    password: String::new(),
+                }],
                 urls: Vec::new(),
                 otp: Some(Otp::Hotp(Hotp::new(secret, 0))),
             },

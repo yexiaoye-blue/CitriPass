@@ -163,12 +163,13 @@ mod tests {
         match &item.draft.data {
             vault_core::ItemData::Login {
                 username,
-                password,
+                passwords,
                 otp: Some(vault_core::Otp::Totp(totp)),
                 ..
             } => {
                 assert_eq!(username, "ada");
-                assert_eq!(password, &current_password);
+                assert_eq!(passwords.len(), 1);
+                assert_eq!(passwords[0].password, current_password);
                 assert_eq!(totp.digits, 8);
             }
             _ => panic!("expected a login with TOTP"),

@@ -258,10 +258,11 @@ impl<S: VaultStore> VaultSession<S> {
         Ok(self.vault.get_item(item.item_id)?)
     }
 
-    /// Replace a login's title, username, password, and notes, then commit.
+    /// Replace a login's title, username, password list, and notes, then commit.
     ///
-    /// URLs and one-time password material already stored on the login stay in
-    /// place. Other item kinds are rejected.
+    /// The password list replaces the stored list in full. URLs, one-time
+    /// password material, tags, folder, favorite, attachments, and custom fields
+    /// stay. Other item kinds are rejected.
     ///
     /// # Errors
     ///
@@ -1053,7 +1054,10 @@ mod tests {
             .create_login(LoginDraft {
                 title: "Mail".to_string(),
                 username: "a@b.c".to_string(),
-                password: "secret".to_string(),
+                passwords: vec![vault_core::LoginPassword {
+                    name: "密码".to_string(),
+                    password: "secret".to_string(),
+                }],
                 notes: "desk".to_string(),
             })
             .unwrap();
@@ -1066,7 +1070,10 @@ mod tests {
                 LoginDraft {
                     title: "Mail".to_string(),
                     username: "c@d.e".to_string(),
-                    password: "next".to_string(),
+                    passwords: vec![vault_core::LoginPassword {
+                        name: "密码".to_string(),
+                        password: "next".to_string(),
+                    }],
                     notes: "desk".to_string(),
                 },
             )
@@ -1229,7 +1236,10 @@ mod tests {
             .create_login(LoginDraft {
                 title: "Desk".to_string(),
                 username: "c@d.e".to_string(),
-                password: "secret".to_string(),
+                passwords: vec![vault_core::LoginPassword {
+                    name: "密码".to_string(),
+                    password: "secret".to_string(),
+                }],
                 notes: "kept".to_string(),
             })
             .unwrap();

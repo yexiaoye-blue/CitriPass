@@ -260,7 +260,10 @@ mod tests {
                 title,
                 ItemData::Login {
                     username: "ada".to_string(),
-                    password: "secret".to_string(),
+                    passwords: vec![vault_core::LoginPassword {
+                        name: vault_core::LEGACY_LOGIN_PASSWORD_NAME.to_string(),
+                        password: "secret".to_string(),
+                    }],
                     urls: Vec::new(),
                     otp: None,
                 },

@@ -21,7 +21,10 @@ pub use backup::SealedBackup;
 pub use crypto::{KdfSettings, KDF_ITERATIONS, KDF_MEMORY_KIB, KDF_PARALLELISM};
 pub use device::{DeviceKey, DeviceUnlock};
 pub use error::{Error, InputError, Result};
-pub use item::{AttachmentRef, CustomField, Item, ItemData, ItemDraft, LoginDraft, TotpDraft};
+pub use item::{
+    AttachmentRef, CustomField, Item, ItemData, ItemDraft, LoginDraft, LoginPassword, TotpDraft,
+    LEGACY_LOGIN_PASSWORD_NAME,
+};
 pub use limits::ATTACHMENT_CHUNK_SIZE;
 pub use password::{generate_password, PasswordOptions};
 pub use recovery::RecoveryKey;

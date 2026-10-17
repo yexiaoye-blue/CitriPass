@@ -112,12 +112,23 @@ fn search_skips_the_password() {
         .create_login(LoginDraft {
             title: "Mail".into(),
             username: "ada".into(),
-            password: "super-secret-value".into(),
+            passwords: vec![
+                LoginPassword {
+                    name: LEGACY_LOGIN_PASSWORD_NAME.into(),
+                    password: "super-secret-value".into(),
+                },
+                LoginPassword {
+                    name: "备用".into(),
+                    password: "second-secret-value".into(),
+                },
+            ],
             notes: String::new(),
         })
         .unwrap();
     assert!(vault.search("ada").unwrap().len() == 1);
     assert!(vault.search("super-secret-value").unwrap().is_empty());
+    assert!(vault.search("second-secret-value").unwrap().is_empty());
+    assert!(vault.search("备用").unwrap().is_empty());
 }
 
 #[test]

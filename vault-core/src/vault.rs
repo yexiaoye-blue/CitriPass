@@ -263,7 +263,11 @@ impl UnlockedVault {
         self.create_item(draft.into())
     }
 
-    /// Replace only the login title, username, password, and notes.
+    /// Replace the login title, username, password list, and notes.
+    ///
+    /// The password list replaces the stored list in full. URLs, the login
+    /// one-time password, tags, folder, favorite, attachments, and custom fields
+    /// stay. A caller that wants to keep an existing password must pass it back.
     pub fn update_login(&mut self, item_id: Uuid, mut draft: LoginDraft) -> Result<Item> {
         let current = self.get_item(item_id)?;
         if current.deleted {
@@ -278,7 +282,7 @@ impl UnlockedVault {
         next.notes = std::mem::take(&mut draft.notes);
         next.data = ItemData::Login {
             username: std::mem::take(&mut draft.username),
-            password: std::mem::take(&mut draft.password),
+            passwords: std::mem::take(&mut draft.passwords),
             urls,
             otp,
         };
@@ -698,5 +702,105 @@ mod tests {
         assert_ne!(vault.header(), committed_header);
         vault.undo_uncommitted_header(&committed_header).unwrap();
         assert_eq!(vault.header(), committed_header);
+    }
+
+    #[test]
+    fn update_login_replaces_passwords_and_keeps_urls_otp_and_metadata() {
+        use crate::item::{AttachmentRef, CustomField, LoginPassword};
+        use crate::totp::{Otp, Totp, TotpAlgorithm};
+
+        let (mut vault, _) = UnlockedVault::create("correct horse battery").unwrap();
+        let bystander = vault
+            .create_item(ItemDraft::new("Note", ItemData::SecureNote))
+            .unwrap();
+        let bystander_bytes = vault.export_item(bystander.item_id).unwrap();
+        let mut totp = Totp::new("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        totp.algorithm = TotpAlgorithm::Sha256;
+        totp.digits = 8;
+        totp.period = 45;
+        let mut draft = ItemDraft::new(
+            "Mail",
+            ItemData::Login {
+                username: "ada".into(),
+                passwords: vec![LoginPassword {
+                    name: "密码".into(),
+                    password: "one".into(),
+                }],
+                urls: vec!["https://example.test".into()],
+                otp: Some(Otp::Totp(totp)),
+            },
+        );
+        draft.notes = "keep".into();
+        draft.tags = vec!["home".into()];
+        draft.favorite = true;
+        draft.custom_fields = vec![CustomField {
+            name: "PIN".into(),
+            value: "1234".into(),
+            concealed: true,
+        }];
+        draft.attachments = vec![AttachmentRef {
+            attachment_id: Uuid::from_u128(3),
+            revision: 1,
+            file_name: "file.txt".into(),
+            media_type: "text/plain".into(),
+        }];
+        let created = vault.create_item(draft).unwrap();
+        let updated = vault
+            .update_login(
+                created.item_id,
+                LoginDraft {
+                    title: "Mailbox".into(),
+                    username: "ada@example.test".into(),
+                    passwords: vec![
+                        LoginPassword {
+                            name: "密码".into(),
+                            password: "one".into(),
+                        },
+                        LoginPassword {
+                            name: "备用".into(),
+                            password: String::new(),
+                        },
+                    ],
+                    notes: "keep".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.title, "Mailbox");
+        assert_eq!(updated.notes, "keep");
+        assert!(updated.favorite);
+        assert_eq!(updated.tags, vec!["home".to_string()]);
+        assert_eq!(updated.custom_fields[0].name, "PIN");
+        assert_eq!(updated.custom_fields[0].value, "1234");
+        assert_eq!(updated.attachments.len(), 1);
+        match &updated.data {
+            ItemData::Login {
+                username,
+                passwords,
+                urls,
+                otp,
+            } => {
+                assert_eq!(username, "ada@example.test");
+                assert_eq!(passwords.len(), 2);
+                assert_eq!(passwords[0].password, "one");
+                assert_eq!(passwords[1].name, "备用");
+                assert_eq!(passwords[1].password, "");
+                assert_eq!(urls, &["https://example.test".to_string()]);
+                match otp {
+                    Some(Otp::Totp(stored)) => {
+                        assert_eq!(stored.secret, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+                        assert_eq!(stored.algorithm, TotpAlgorithm::Sha256);
+                        assert_eq!(stored.digits, 8);
+                        assert_eq!(stored.period, 45);
+                    }
+                    _ => panic!("otp"),
+                }
+            }
+            _ => panic!("login"),
+        }
+        assert_eq!(
+            vault.export_item(bystander.item_id).unwrap(),
+            bystander_bytes
+        );
     }
 }

@@ -8,7 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
-use vault_core::{Item, ItemData, ItemDraft, Otp, Totp, UnlockedVault};
+use vault_core::{
+    Item, ItemData, ItemDraft, LoginPassword, Otp, Totp, UnlockedVault, LEGACY_LOGIN_PASSWORD_NAME,
+};
 use vault_exchange::{Catalog, FormatId, ImportSource};
 
 use crate::error::Error;
@@ -316,7 +318,10 @@ fn add_item(kind: AddKind) -> Result<(), Error> {
                 title,
                 ItemData::Login {
                     username,
-                    password: login_password.to_string(),
+                    passwords: vec![LoginPassword {
+                        name: LEGACY_LOGIN_PASSWORD_NAME.to_string(),
+                        password: login_password.to_string(),
+                    }],
                     urls: url,
                     otp: None,
                 },
@@ -447,7 +452,19 @@ fn edit_item(edit: EditItem<'_>) -> Result<(), Error> {
     }
     if let Some(new_password) = new_password {
         match &mut draft.data {
-            ItemData::Login { password: slot, .. } => *slot = new_password.to_string(),
+            ItemData::Login { passwords, .. } => {
+                if let Some(slot) = passwords
+                    .iter_mut()
+                    .find(|password| password.name == LEGACY_LOGIN_PASSWORD_NAME)
+                {
+                    slot.password = new_password.to_string();
+                } else {
+                    passwords.push(LoginPassword {
+                        name: LEGACY_LOGIN_PASSWORD_NAME.to_string(),
+                        password: new_password.to_string(),
+                    });
+                }
+            }
             _ => return Err(Error::NotLogin),
         }
     }
@@ -570,12 +587,14 @@ fn print_item(item: &Item) {
     match &item.data {
         ItemData::Login {
             username,
-            password,
+            passwords,
             urls,
             otp,
         } => {
             println!("用户名：{username}");
-            println!("密码：{password}");
+            for password in passwords {
+                println!("{}：{}", password.name, password.password);
+            }
             for url in urls {
                 println!("网址：{url}");
             }

@@ -13,6 +13,8 @@ pub enum InputError {
     EmptyPassword,
     /// The item title has no non-whitespace characters.
     EmptyTitle,
+    /// A login password name has no non-whitespace characters.
+    EmptyPasswordName,
     /// The recovery key text is empty after removing whitespace.
     EmptyRecoveryKey,
     /// The recovery key is not unpadded base64url.
@@ -121,6 +123,7 @@ impl fmt::Display for InputError {
         match self {
             Self::EmptyPassword => f.write_str("Master password must not be empty"),
             Self::EmptyTitle => f.write_str("Item title must not be empty"),
+            Self::EmptyPasswordName => f.write_str("Login password name must not be empty"),
             Self::EmptyRecoveryKey => f.write_str("Recovery key must not be empty"),
             Self::InvalidRecoveryKeyEncoding => f.write_str("Recovery key must be valid unpadded base64url"),
             Self::InvalidRecoveryKeyLength { expected_bytes } => write!(f, "Recovery key must decode to {expected_bytes} bytes"),

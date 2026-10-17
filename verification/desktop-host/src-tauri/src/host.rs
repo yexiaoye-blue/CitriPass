@@ -291,7 +291,10 @@ impl HostInner {
         let draft = LoginDraft {
             title: title.to_string(),
             username: username.to_string(),
-            password: password.to_string(),
+            passwords: vec![vault_core::LoginPassword {
+                name: vault_core::LEGACY_LOGIN_PASSWORD_NAME.to_string(),
+                password: password.to_string(),
+            }],
             notes: notes.to_string(),
         };
         with_session(self.slot_mut(device), |session| {
@@ -343,7 +346,10 @@ impl HostInner {
                     LoginDraft {
                         title: title.to_string(),
                         username: username.to_string(),
-                        password: password.to_string(),
+                        passwords: vec![vault_core::LoginPassword {
+                            name: vault_core::LEGACY_LOGIN_PASSWORD_NAME.to_string(),
+                            password: password.to_string(),
+                        }],
                         notes: notes.to_string(),
                     },
                 )

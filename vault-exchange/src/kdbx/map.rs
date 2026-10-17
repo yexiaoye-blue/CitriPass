@@ -3,7 +3,9 @@
 use keepass::db::{fields, EntryId, EntryRef, GroupId, GroupRef};
 use keepass::Database;
 use uuid::Uuid;
-use vault_core::{CustomField, ItemData, ItemDraft, Otp};
+use vault_core::{
+    CustomField, ItemData, ItemDraft, LoginPassword, Otp, LEGACY_LOGIN_PASSWORD_NAME,
+};
 
 use crate::import::{ImportPlan, PlannedFolder, PlannedItem, SkipReason, SkippedRecord};
 
@@ -117,12 +119,21 @@ fn map_entry(entry: EntryRef<'_>, folder_source_id: Option<String>, plan: &mut I
     let password = entry.get_password().unwrap_or("").to_string();
     let urls = entry_urls(&entry);
     let otp = take_otp(&entry, &source_id, &title, plan);
-    let mut draft = if login_material(&username, &password, &urls, otp.is_some()) {
+    let has_login = login_material(&username, &password, &urls, otp.is_some());
+    let passwords = if password.is_empty() {
+        Vec::new()
+    } else {
+        vec![LoginPassword {
+            name: LEGACY_LOGIN_PASSWORD_NAME.to_string(),
+            password,
+        }]
+    };
+    let mut draft = if has_login {
         ItemDraft::new(
             title.clone(),
             ItemData::Login {
                 username,
-                password,
+                passwords,
                 urls,
                 otp,
             },
@@ -412,12 +423,14 @@ mod tests {
         match &mail.draft.data {
             ItemData::Login {
                 username,
-                password,
+                passwords,
                 urls,
                 otp,
             } => {
                 assert_eq!(username, "ada");
-                assert_eq!(password, "secret");
+                assert_eq!(passwords.len(), 1);
+                assert_eq!(passwords[0].name, LEGACY_LOGIN_PASSWORD_NAME);
+                assert_eq!(passwords[0].password, "secret");
                 assert_eq!(
                     urls,
                     &[
