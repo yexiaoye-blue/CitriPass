@@ -14,7 +14,7 @@
 
 界面和命令只调用 `VaultSession`。SQLite 和附件目录在组合根里创建。界面不写 SQL，也不另做一套加密。条目修改走会自己提交的方法，不使用 `vault_mut` 之后再 `save`。
 
-登录密码用现有的 `generate_password` 生成。验证码显示当前动态码和剩余秒数。搜索走 `VaultSession::search`，匹配标题、备注、标签和登录用户名，不匹配密码。
+登录可以保存多条密码，每条有名称和密码，可以一条都没有。名称会显示在列表里，详情里可以分别显示或隐藏，也可以用现有的 `generate_password` 生成。登录、笔记和独立验证码都可以增删自定义字段，每条有名称、值和是否隐藏。保存时读出当前条目，改完完整草稿后调用一次 `update_item` 或 `create_item`，所以一次保存只有一个修订。登录原有的网址、一次性密码、标签和附件会留着；编辑验证码时保留原来的算法、位数和周期。搜索走 `VaultSession::search`，匹配标题、备注、标签和登录用户名，不匹配密码。
 
 文件夹在 `ItemData` 里的父级字段是私有的，所以 `VaultSession::create_folder` 和 `update_folder` 负责创建和修改并自己提交。收藏和条目所在文件夹使用 `ItemDraft` 上已经公开的 `favorite` 和 `folder_id`。
 

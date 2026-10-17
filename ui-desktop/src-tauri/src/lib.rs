@@ -8,7 +8,10 @@ use tauri::State;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
-use crate::host::{CreatedVault, HostInner, HostStatus, ItemView, LoginItem, TextItem, TotpItem};
+use crate::host::{
+    CreatedVault, HostInner, HostStatus, ItemView, LoginUpdate, LoginWrite, NoteUpdate, NoteWrite,
+    TotpUpdate, TotpWrite,
+};
 
 struct SharedHost(Arc<Mutex<HostInner>>);
 
@@ -156,21 +159,13 @@ async fn set_idle_minutes(host: State<'_, SharedHost>, minutes: u32) -> Result<H
 #[tauri::command]
 async fn create_note(
     host: State<'_, SharedHost>,
-    title: String,
-    notes: String,
-    folder_id: Option<String>,
-    favorite: bool,
+    mut body: NoteWrite,
 ) -> Result<HostStatus, String> {
     let shared = Arc::clone(&host.0);
-    let folder_id = optional_id(folder_id)?;
+    let folder_id = optional_id(body.folder_id.take())?;
     blocking(move || {
         lock_arc(&shared)
-            .create_note(TextItem {
-                title: &title,
-                notes: &notes,
-                folder_id,
-                favorite,
-            })
+            .create_note(folder_id, &body)
             .map_err(|error| error.to_string())
     })
     .await
@@ -179,26 +174,14 @@ async fn create_note(
 #[tauri::command]
 async fn update_note(
     host: State<'_, SharedHost>,
-    item_id: String,
-    title: String,
-    notes: String,
-    folder_id: Option<String>,
-    favorite: bool,
+    mut body: NoteUpdate,
 ) -> Result<HostStatus, String> {
     let shared = Arc::clone(&host.0);
-    let item_id = required_id(item_id)?;
-    let folder_id = optional_id(folder_id)?;
+    let item_id = required_id(std::mem::take(&mut body.item_id))?;
+    let folder_id = optional_id(body.body.folder_id.take())?;
     blocking(move || {
         lock_arc(&shared)
-            .update_note(
-                item_id,
-                TextItem {
-                    title: &title,
-                    notes: &notes,
-                    folder_id,
-                    favorite,
-                },
-            )
+            .update_note(item_id, folder_id, &body.body)
             .map_err(|error| error.to_string())
     })
     .await
@@ -207,60 +190,29 @@ async fn update_note(
 #[tauri::command]
 async fn create_login(
     host: State<'_, SharedHost>,
-    title: String,
-    username: String,
-    password: String,
-    notes: String,
-    folder_id: Option<String>,
-    favorite: bool,
+    mut body: LoginWrite,
 ) -> Result<HostStatus, String> {
     let shared = Arc::clone(&host.0);
-    let secret = Secret(password);
-    let folder_id = optional_id(folder_id)?;
+    let folder_id = optional_id(body.folder_id.take())?;
     blocking(move || {
         lock_arc(&shared)
-            .create_login(LoginItem {
-                title: &title,
-                username: &username,
-                password: secret.expose(),
-                notes: &notes,
-                folder_id,
-                favorite,
-            })
+            .create_login(folder_id, &body)
             .map_err(|error| error.to_string())
     })
     .await
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 async fn update_login(
     host: State<'_, SharedHost>,
-    item_id: String,
-    title: String,
-    username: String,
-    password: String,
-    notes: String,
-    folder_id: Option<String>,
-    favorite: bool,
+    mut body: LoginUpdate,
 ) -> Result<HostStatus, String> {
     let shared = Arc::clone(&host.0);
-    let secret = Secret(password);
-    let item_id = required_id(item_id)?;
-    let folder_id = optional_id(folder_id)?;
+    let item_id = required_id(std::mem::take(&mut body.item_id))?;
+    let folder_id = optional_id(body.body.folder_id.take())?;
     blocking(move || {
         lock_arc(&shared)
-            .update_login(
-                item_id,
-                LoginItem {
-                    title: &title,
-                    username: &username,
-                    password: secret.expose(),
-                    notes: &notes,
-                    folder_id,
-                    favorite,
-                },
-            )
+            .update_login(item_id, folder_id, &body.body)
             .map_err(|error| error.to_string())
     })
     .await
@@ -269,24 +221,13 @@ async fn update_login(
 #[tauri::command]
 async fn create_totp(
     host: State<'_, SharedHost>,
-    title: String,
-    secret: String,
-    notes: String,
-    folder_id: Option<String>,
-    favorite: bool,
+    mut body: TotpWrite,
 ) -> Result<HostStatus, String> {
     let shared = Arc::clone(&host.0);
-    let hidden = Secret(secret);
-    let folder_id = optional_id(folder_id)?;
+    let folder_id = optional_id(body.folder_id.take())?;
     blocking(move || {
         lock_arc(&shared)
-            .create_totp(TotpItem {
-                title: &title,
-                secret: hidden.expose(),
-                notes: &notes,
-                folder_id,
-                favorite,
-            })
+            .create_totp(folder_id, &body)
             .map_err(|error| error.to_string())
     })
     .await
@@ -295,29 +236,14 @@ async fn create_totp(
 #[tauri::command]
 async fn update_totp(
     host: State<'_, SharedHost>,
-    item_id: String,
-    title: String,
-    secret: String,
-    notes: String,
-    folder_id: Option<String>,
-    favorite: bool,
+    mut body: TotpUpdate,
 ) -> Result<HostStatus, String> {
     let shared = Arc::clone(&host.0);
-    let hidden = Secret(secret);
-    let item_id = required_id(item_id)?;
-    let folder_id = optional_id(folder_id)?;
+    let item_id = required_id(std::mem::take(&mut body.item_id))?;
+    let folder_id = optional_id(body.body.folder_id.take())?;
     blocking(move || {
         lock_arc(&shared)
-            .update_totp(
-                item_id,
-                TotpItem {
-                    title: &title,
-                    secret: hidden.expose(),
-                    notes: &notes,
-                    folder_id,
-                    favorite,
-                },
-            )
+            .update_totp(item_id, folder_id, &body.body)
             .map_err(|error| error.to_string())
     })
     .await

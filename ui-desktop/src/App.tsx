@@ -611,6 +611,9 @@ function ItemList({
                 <span className="item-meta">
                   {item.kind}
                   {item.username ? " · " + item.username : ""}
+                  {item.passwords.length > 0
+                    ? " · " + item.passwords.map((entry) => entry.name).join("、")
+                    : ""}
                   {item.favorite ? " · 收藏" : ""}
                 </span>
               </span>
@@ -627,6 +630,19 @@ function ItemList({
     </ul>
   );
 }
+
+type PasswordDraft = {
+  name: string;
+  password: string;
+  visible: boolean;
+};
+
+type FieldDraft = {
+  name: string;
+  value: string;
+  concealed: boolean;
+  visible: boolean;
+};
 
 function ItemEditor({
   selected,
@@ -649,12 +665,27 @@ function ItemEditor({
   const [kind, setKind] = useState(fixedKind ?? "login");
   const [title, setTitle] = useState(selected?.title ?? "");
   const [username, setUsername] = useState(selected?.username ?? "");
-  const [password, setPassword] = useState(selected?.password ?? "");
+  const [passwords, setPasswords] = useState<PasswordDraft[]>(() =>
+    selected
+      ? selected.passwords.map((entry) => ({
+          name: entry.name,
+          password: entry.password,
+          visible: false,
+        }))
+      : [{ name: "密码", password: "", visible: false }],
+  );
+  const [fields, setFields] = useState<FieldDraft[]>(() =>
+    (selected?.customFields ?? []).map((field) => ({
+      name: field.name,
+      value: field.value,
+      concealed: field.concealed,
+      visible: false,
+    })),
+  );
   const [notes, setNotes] = useState(selected?.notes ?? "");
   const [secret, setSecret] = useState(selected?.totpSecret ?? "");
   const [folderId, setFolderId] = useState(selected?.folderId ?? defaultFolderId ?? "");
   const [favorite, setFavorite] = useState(selected?.favorite ?? false);
-  const [visible, setVisible] = useState(false);
   const [length, setLength] = useState("24");
   const [confirming, setConfirming] = useState(false);
   const [localError, setLocalError] = useState("");
@@ -662,34 +693,68 @@ function ItemEditor({
 
   async function save() {
     const folder = folderId || null;
+    if (fields.some((field) => field.name.trim().length === 0)) {
+      setLocalError("自定义字段的名称不能是空白");
+      return;
+    }
+    if (shownKind === "login" && passwords.some((entry) => entry.name.trim().length === 0)) {
+      setLocalError("密码名称不能是空白");
+      return;
+    }
+    const customFields = fields.map((field) => ({
+      name: field.name,
+      value: field.value,
+      concealed: field.concealed,
+    }));
+    const passwordList = passwords.map((entry) => ({
+      name: entry.name,
+      password: entry.password,
+    }));
     if (selected) {
       if (shownKind === "note") {
-        await onRun(() => updateNote(selected.itemId, title, notes, folder, favorite));
+        await onRun(() => updateNote(selected.itemId, title, notes, customFields, folder, favorite));
       } else if (shownKind === "totp") {
-        await onRun(() => updateTotp(selected.itemId, title, secret, notes, folder, favorite));
+        await onRun(() =>
+          updateTotp(selected.itemId, title, secret, notes, customFields, folder, favorite),
+        );
       } else {
         await onRun(() =>
-          updateLogin(selected.itemId, title, username, password, notes, folder, favorite),
+          updateLogin(
+            selected.itemId,
+            title,
+            username,
+            passwordList,
+            notes,
+            customFields,
+            folder,
+            favorite,
+          ),
         );
       }
       return;
     }
     const created =
       shownKind === "note"
-        ? await onRun(() => createNote(title, notes, folder, favorite))
+        ? await onRun(() => createNote(title, notes, customFields, folder, favorite))
         : shownKind === "totp"
-          ? await onRun(() => createTotp(title, secret, notes, folder, favorite))
-          : await onRun(() => createLogin(title, username, password, notes, folder, favorite));
+          ? await onRun(() => createTotp(title, secret, notes, customFields, folder, favorite))
+          : await onRun(() =>
+              createLogin(title, username, passwordList, notes, customFields, folder, favorite),
+            );
     if (created) {
       onReset();
     }
   }
 
-  async function fillPassword() {
+  async function fillPassword(index: number) {
     setLocalError("");
     try {
       const generated = await generatePassword(Number(length));
-      setPassword(generated);
+      setPasswords((current) =>
+        current.map((entry, entryIndex) =>
+          entryIndex === index ? { ...entry, password: generated } : entry,
+        ),
+      );
     } catch (caught) {
       setLocalError(errorText(caught));
     }
@@ -757,42 +822,180 @@ function ItemEditor({
         </label>
       ) : null}
       {shownKind === "login" ? (
-        <label>
-          密码
-          <input
-            type={visible ? "text" : "password"}
-            value={password}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-        </label>
+        <fieldset className="repeat">
+          <legend>密码</legend>
+          {passwords.length === 0 ? <p className="hint">可以没有密码，也可以添加多条。</p> : null}
+          {passwords.map((entry, index) => (
+            <div className="repeat-row" key={index}>
+              <label>
+                名称
+                <input
+                  value={entry.name}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(event) =>
+                    setPasswords((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, name: event.target.value } : item,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label>
+                密码
+                <input
+                  type={entry.visible ? "text" : "password"}
+                  value={entry.password}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(event) =>
+                    setPasswords((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, password: event.target.value } : item,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <div className="row-actions">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPasswords((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, visible: !item.visible } : item,
+                      ),
+                    )
+                  }
+                >
+                  {entry.visible ? "隐藏" : "显示"}
+                </button>
+                <button type="button" onClick={() => void fillPassword(index)}>
+                  生成
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPasswords((current) => current.filter((_, itemIndex) => itemIndex !== index))
+                  }
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          ))}
+          <div className="row-actions">
+            <button
+              type="button"
+              onClick={() =>
+                setPasswords((current) => [
+                  ...current,
+                  { name: "密码", password: "", visible: false },
+                ])
+              }
+            >
+              添加密码
+            </button>
+            <label className="inline">
+              长度
+              <input
+                type="number"
+                min={8}
+                max={1024}
+                value={length}
+                onChange={(event) => setLength(event.target.value)}
+              />
+            </label>
+          </div>
+        </fieldset>
       ) : null}
-      {shownKind === "login" ? (
-        <div className="actions">
-          <button type="button" onClick={() => setVisible((value) => !value)}>
-            {visible ? "隐藏密码" : "显示密码"}
-          </button>
-          <label className="inline">
-            长度
-            <input
-              type="number"
-              min={8}
-              max={1024}
-              value={length}
-              onChange={(event) => setLength(event.target.value)}
-            />
-          </label>
+      <fieldset className="repeat">
+        <legend>自定义字段</legend>
+        {fields.length === 0 ? <p className="hint">名称、值和是否隐藏。可以一条都没有。</p> : null}
+        {fields.map((field, index) => (
+          <div className="repeat-row" key={index}>
+            <label>
+              名称
+              <input
+                value={field.name}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) =>
+                  setFields((current) =>
+                    current.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, name: event.target.value } : item,
+                    ),
+                  )
+                }
+              />
+            </label>
+            <label>
+              值
+              <input
+                type={field.concealed && !field.visible ? "password" : "text"}
+                value={field.value}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) =>
+                  setFields((current) =>
+                    current.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, value: event.target.value } : item,
+                    ),
+                  )
+                }
+              />
+            </label>
+            <div className="row-actions">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={field.concealed}
+                  onChange={(event) =>
+                    setFields((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, concealed: event.target.checked } : item,
+                      ),
+                    )
+                  }
+                />
+                隐藏
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  setFields((current) =>
+                    current.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, visible: !item.visible } : item,
+                    ),
+                  )
+                }
+              >
+                {field.visible ? "隐藏值" : "显示值"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setFields((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        ))}
+        <div className="row-actions">
           <button
             type="button"
-            onClick={() => {
-              void fillPassword();
-            }}
+            onClick={() =>
+              setFields((current) => [
+                ...current,
+                { name: "", value: "", concealed: false, visible: false },
+              ])
+            }
           >
-            生成密码
+            添加字段
           </button>
         </div>
-      ) : null}
+      </fieldset>
       {shownKind === "totp" ? (
         <label>
           验证码密钥

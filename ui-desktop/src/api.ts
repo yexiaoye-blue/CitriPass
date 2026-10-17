@@ -2,6 +2,17 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Phase = "empty" | "locked" | "unlocked";
 
+export interface PasswordView {
+  name: string;
+  password: string;
+}
+
+export interface CustomFieldView {
+  name: string;
+  value: string;
+  concealed: boolean;
+}
+
 export interface ItemView {
   itemId: string;
   title: string;
@@ -11,7 +22,8 @@ export interface ItemView {
   conflictCopy: boolean;
   notes: string;
   username: string | null;
-  password: string | null;
+  passwords: PasswordView[];
+  customFields: CustomFieldView[];
   totpCode: string | null;
   totpRemaining: number | null;
   totpSecret: string | null;
@@ -77,50 +89,52 @@ export function setIdleMinutes(minutes: number): Promise<HostStatus> {
 export function createNote(
   title: string,
   notes: string,
+  customFields: CustomFieldView[],
   folderId: string | null,
   favorite: boolean,
 ): Promise<HostStatus> {
-  return invoke("create_note", { title, notes, folderId, favorite });
+  return invoke("create_note", { body: { title, notes, customFields, folderId, favorite } });
 }
 
 export function updateNote(
   itemId: string,
   title: string,
   notes: string,
+  customFields: CustomFieldView[],
   folderId: string | null,
   favorite: boolean,
 ): Promise<HostStatus> {
-  return invoke("update_note", { itemId, title, notes, folderId, favorite });
+  return invoke("update_note", {
+    body: { itemId, title, notes, customFields, folderId, favorite },
+  });
 }
 
 export function createLogin(
   title: string,
   username: string,
-  password: string,
+  passwords: PasswordView[],
   notes: string,
+  customFields: CustomFieldView[],
   folderId: string | null,
   favorite: boolean,
 ): Promise<HostStatus> {
-  return invoke("create_login", { title, username, password, notes, folderId, favorite });
+  return invoke("create_login", {
+    body: { title, username, passwords, notes, customFields, folderId, favorite },
+  });
 }
 
 export function updateLogin(
   itemId: string,
   title: string,
   username: string,
-  password: string,
+  passwords: PasswordView[],
   notes: string,
+  customFields: CustomFieldView[],
   folderId: string | null,
   favorite: boolean,
 ): Promise<HostStatus> {
   return invoke("update_login", {
-    itemId,
-    title,
-    username,
-    password,
-    notes,
-    folderId,
-    favorite,
+    body: { itemId, title, username, passwords, notes, customFields, folderId, favorite },
   });
 }
 
@@ -128,10 +142,11 @@ export function createTotp(
   title: string,
   secret: string,
   notes: string,
+  customFields: CustomFieldView[],
   folderId: string | null,
   favorite: boolean,
 ): Promise<HostStatus> {
-  return invoke("create_totp", { title, secret, notes, folderId, favorite });
+  return invoke("create_totp", { body: { title, secret, notes, customFields, folderId, favorite } });
 }
 
 export function updateTotp(
@@ -139,10 +154,13 @@ export function updateTotp(
   title: string,
   secret: string,
   notes: string,
+  customFields: CustomFieldView[],
   folderId: string | null,
   favorite: boolean,
 ): Promise<HostStatus> {
-  return invoke("update_totp", { itemId, title, secret, notes, folderId, favorite });
+  return invoke("update_totp", {
+    body: { itemId, title, secret, notes, customFields, folderId, favorite },
+  });
 }
 
 export function createFolder(title: string, parentId: string | null): Promise<HostStatus> {

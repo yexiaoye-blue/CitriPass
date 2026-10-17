@@ -8,16 +8,17 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 use vault_attachment_store::FileAttachmentStore;
 use vault_core::{
-    generate_password, Item, ItemData, ItemDraft, LoginDraft, PasswordOptions, Totp, TotpDraft,
+    generate_password, CustomField, Item, ItemData, ItemDraft, LoginPassword, PasswordOptions, Totp,
 };
 use vault_storage::{SessionError, VaultSession, VaultStore, VaultStoreTransaction};
 use vault_storage_sqlite::{SqliteStore, SqliteStoreError};
 use vault_sync::{sync_items, HttpSyncError, HttpSyncTransport, SyncReport};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_IDLE_MINUTES: u32 = 5;
 const MIN_IDLE_MINUTES: u32 = 1;
@@ -53,6 +54,10 @@ pub(crate) enum HostError {
     NotUnlocked,
     #[error("标题不能是空白")]
     EmptyTitle,
+    #[error("密码名称不能是空白")]
+    EmptyPasswordName,
+    #[error("自定义字段的名称不能是空白")]
+    EmptyFieldName,
     #[error("条目编号无法识别")]
     BadId,
     #[error("这条条目类型不对")]
@@ -99,13 +104,29 @@ pub(crate) struct ItemView {
     pub(crate) conflict_copy: bool,
     pub(crate) notes: String,
     pub(crate) username: Option<String>,
-    pub(crate) password: Option<String>,
+    pub(crate) passwords: Vec<PasswordView>,
+    pub(crate) custom_fields: Vec<FieldView>,
     pub(crate) totp_code: Option<String>,
     pub(crate) totp_remaining: Option<u32>,
     pub(crate) totp_secret: Option<String>,
     pub(crate) favorite: bool,
     pub(crate) folder_id: Option<String>,
     pub(crate) folder_parent_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PasswordView {
+    pub(crate) name: String,
+    pub(crate) password: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FieldView {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    pub(crate) concealed: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -126,28 +147,76 @@ pub(crate) struct CreatedVault {
     pub(crate) recovery_key: String,
 }
 
-pub(crate) struct TextItem<'a> {
-    pub(crate) title: &'a str,
-    pub(crate) notes: &'a str,
-    pub(crate) folder_id: Option<Uuid>,
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PasswordInput {
+    name: String,
+    password: String,
+}
+
+#[derive(Clone, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FieldInput {
+    name: String,
+    value: String,
+    concealed: bool,
+}
+
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NoteWrite {
+    pub(crate) title: String,
+    pub(crate) notes: String,
+    pub(crate) custom_fields: Vec<FieldInput>,
+    pub(crate) folder_id: Option<String>,
     pub(crate) favorite: bool,
 }
 
-pub(crate) struct LoginItem<'a> {
-    pub(crate) title: &'a str,
-    pub(crate) username: &'a str,
-    pub(crate) password: &'a str,
-    pub(crate) notes: &'a str,
-    pub(crate) folder_id: Option<Uuid>,
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LoginWrite {
+    pub(crate) title: String,
+    pub(crate) username: String,
+    pub(crate) passwords: Vec<PasswordInput>,
+    pub(crate) notes: String,
+    pub(crate) custom_fields: Vec<FieldInput>,
+    pub(crate) folder_id: Option<String>,
     pub(crate) favorite: bool,
 }
 
-pub(crate) struct TotpItem<'a> {
-    pub(crate) title: &'a str,
-    pub(crate) secret: &'a str,
-    pub(crate) notes: &'a str,
-    pub(crate) folder_id: Option<Uuid>,
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TotpWrite {
+    pub(crate) title: String,
+    pub(crate) secret: String,
+    pub(crate) notes: String,
+    pub(crate) custom_fields: Vec<FieldInput>,
+    pub(crate) folder_id: Option<String>,
     pub(crate) favorite: bool,
+}
+
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NoteUpdate {
+    pub(crate) item_id: String,
+    #[serde(flatten)]
+    pub(crate) body: NoteWrite,
+}
+
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LoginUpdate {
+    pub(crate) item_id: String,
+    #[serde(flatten)]
+    pub(crate) body: LoginWrite,
+}
+
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TotpUpdate {
+    pub(crate) item_id: String,
+    #[serde(flatten)]
+    pub(crate) body: TotpWrite,
 }
 
 impl HostInner {
@@ -266,15 +335,21 @@ impl HostInner {
         self.snapshot()
     }
 
-    pub(crate) fn create_note(&mut self, item: TextItem<'_>) -> Result<HostStatus, HostError> {
+    pub(crate) fn create_note(
+        &mut self,
+        folder_id: Option<Uuid>,
+        item: &NoteWrite,
+    ) -> Result<HostStatus, HostError> {
         self.begin_activity()?;
-        let title = require_title(item.title)?;
-        self.ensure_folder(item.folder_id)?;
+        let title = require_title(&item.title)?;
+        let fields = custom_fields(&item.custom_fields)?;
+        self.ensure_folder(folder_id)?;
         let session = self.session()?;
         let mut draft = ItemDraft::new(title, ItemData::SecureNote);
-        draft.notes = item.notes.to_string();
-        draft.folder_id = item.folder_id;
+        draft.notes = item.notes.clone();
+        draft.folder_id = folder_id;
         draft.favorite = item.favorite;
+        draft.custom_fields = fields;
         session.create_item(draft).map_err(session_err)?;
         self.snapshot()
     }
@@ -282,11 +357,13 @@ impl HostInner {
     pub(crate) fn update_note(
         &mut self,
         item_id: Uuid,
-        item: TextItem<'_>,
+        folder_id: Option<Uuid>,
+        item: &NoteWrite,
     ) -> Result<HostStatus, HostError> {
         self.begin_activity()?;
-        let title = require_title(item.title)?;
-        self.ensure_folder(item.folder_id)?;
+        let title = require_title(&item.title)?;
+        let fields = custom_fields(&item.custom_fields)?;
+        self.ensure_folder(folder_id)?;
         let session = self.session()?;
         let current = session.get_item(item_id).map_err(session_err)?;
         if !matches!(current.data, ItemData::SecureNote) {
@@ -294,75 +371,126 @@ impl HostInner {
         }
         let mut draft = current.content.clone();
         draft.title = title;
-        draft.notes = item.notes.to_string();
-        draft.folder_id = item.folder_id;
+        draft.notes = item.notes.clone();
+        draft.folder_id = folder_id;
         draft.favorite = item.favorite;
+        draft.custom_fields = fields;
         session.update_item(item_id, draft).map_err(session_err)?;
         self.snapshot()
     }
 
-    pub(crate) fn create_login(&mut self, item: LoginItem<'_>) -> Result<HostStatus, HostError> {
+    pub(crate) fn create_login(
+        &mut self,
+        folder_id: Option<Uuid>,
+        item: &LoginWrite,
+    ) -> Result<HostStatus, HostError> {
         self.begin_activity()?;
-        let title = require_title(item.title)?;
-        self.ensure_folder(item.folder_id)?;
+        let title = require_title(&item.title)?;
+        let passwords = login_passwords(&item.passwords)?;
+        let fields = custom_fields(&item.custom_fields)?;
+        self.ensure_folder(folder_id)?;
         let session = self.session()?;
-        let created = session
-            .create_login(LoginDraft {
-                title,
-                username: item.username.to_string(),
-                password: item.password.to_string(),
-                notes: item.notes.to_string(),
-            })
-            .map_err(session_err)?;
-        place_item(session, created.item_id, item.folder_id, item.favorite)?;
+        let mut draft = ItemDraft::new(
+            title,
+            ItemData::Login {
+                username: item.username.clone(),
+                passwords,
+                urls: Vec::new(),
+                otp: None,
+            },
+        );
+        draft.notes = item.notes.clone();
+        draft.folder_id = folder_id;
+        draft.favorite = item.favorite;
+        draft.custom_fields = fields;
+        session.create_item(draft).map_err(session_err)?;
         self.snapshot()
     }
 
     pub(crate) fn update_login(
         &mut self,
         item_id: Uuid,
-        item: LoginItem<'_>,
+        folder_id: Option<Uuid>,
+        item: &LoginWrite,
     ) -> Result<HostStatus, HostError> {
         self.begin_activity()?;
-        let title = require_title(item.title)?;
-        self.ensure_folder(item.folder_id)?;
+        let title = require_title(&item.title)?;
+        let passwords = login_passwords(&item.passwords)?;
+        let fields = custom_fields(&item.custom_fields)?;
+        self.ensure_folder(folder_id)?;
         let session = self.session()?;
-        session
-            .update_login(
-                item_id,
-                LoginDraft {
-                    title,
-                    username: item.username.to_string(),
-                    password: item.password.to_string(),
-                    notes: item.notes.to_string(),
-                },
-            )
-            .map_err(session_err)?;
-        place_item(session, item_id, item.folder_id, item.favorite)?;
+        let current = session.get_item(item_id).map_err(session_err)?;
+        if !matches!(current.data, ItemData::Login { .. }) {
+            return Err(HostError::WrongKind);
+        }
+        let mut draft = current.content.clone();
+        draft.title = title;
+        draft.notes = item.notes.clone();
+        draft.folder_id = folder_id;
+        draft.favorite = item.favorite;
+        draft.custom_fields = fields;
+        if let ItemData::Login {
+            username,
+            passwords: stored,
+            ..
+        } = &mut draft.data
+        {
+            *username = item.username.clone();
+            *stored = passwords;
+        }
+        session.update_item(item_id, draft).map_err(session_err)?;
         self.snapshot()
     }
 
-    pub(crate) fn create_totp(&mut self, item: TotpItem<'_>) -> Result<HostStatus, HostError> {
+    pub(crate) fn create_totp(
+        &mut self,
+        folder_id: Option<Uuid>,
+        item: &TotpWrite,
+    ) -> Result<HostStatus, HostError> {
         self.begin_activity()?;
-        let draft = totp_draft(item.title, item.secret, item.notes)?;
-        self.ensure_folder(item.folder_id)?;
+        let title = require_title(&item.title)?;
+        let fields = custom_fields(&item.custom_fields)?;
+        self.ensure_folder(folder_id)?;
         let session = self.session()?;
-        let created = session.create_totp(draft).map_err(session_err)?;
-        place_item(session, created.item_id, item.folder_id, item.favorite)?;
+        let mut draft = ItemDraft::new(
+            title,
+            ItemData::Totp {
+                totp: Totp::new(normalize_secret(&item.secret)),
+            },
+        );
+        draft.notes = item.notes.clone();
+        draft.folder_id = folder_id;
+        draft.favorite = item.favorite;
+        draft.custom_fields = fields;
+        session.create_item(draft).map_err(session_err)?;
         self.snapshot()
     }
 
     pub(crate) fn update_totp(
         &mut self,
         item_id: Uuid,
-        item: TotpItem<'_>,
+        folder_id: Option<Uuid>,
+        item: &TotpWrite,
     ) -> Result<HostStatus, HostError> {
         self.begin_activity()?;
-        let draft = totp_draft(item.title, item.secret, item.notes)?;
-        self.ensure_folder(item.folder_id)?;
+        let title = require_title(&item.title)?;
+        let fields = custom_fields(&item.custom_fields)?;
+        self.ensure_folder(folder_id)?;
         let session = self.session()?;
-        session.update_totp(item_id, draft).map_err(session_err)?;
-        place_item(session, item_id, item.folder_id, item.favorite)?;
+        let current = session.get_item(item_id).map_err(session_err)?;
+        let ItemData::Totp { totp } = &current.data else {
+            return Err(HostError::WrongKind);
+        };
+        let mut next = totp.clone();
+        next.secret = normalize_secret(&item.secret);
+        let mut draft = current.content.clone();
+        draft.title = title;
+        draft.notes = item.notes.clone();
+        draft.folder_id = folder_id;
+        draft.favorite = item.favorite;
+        draft.custom_fields = fields;
+        draft.data = ItemData::Totp { totp: next };
+        session.update_item(item_id, draft).map_err(session_err)?;
         self.snapshot()
     }
 
@@ -586,37 +714,6 @@ pub(crate) fn generated_password(length: u32) -> Result<String, HostError> {
         .map_err(|error| HostError::Protocol(explain(error)))
 }
 
-fn place_item(
-    session: &mut VaultSession<SqliteStore>,
-    item_id: Uuid,
-    folder_id: Option<Uuid>,
-    favorite: bool,
-) -> Result<(), HostError> {
-    let current = session.get_item(item_id).map_err(session_err)?;
-    if current.favorite == favorite && current.folder_id == folder_id {
-        return Ok(());
-    }
-    let mut draft = current.content.clone();
-    draft.favorite = favorite;
-    draft.folder_id = folder_id;
-    session.update_item(item_id, draft).map_err(session_err)?;
-    Ok(())
-}
-
-fn totp_draft(title: &str, secret: &str, notes: &str) -> Result<TotpDraft, HostError> {
-    let title = require_title(title)?;
-    let secret: String = secret
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .flat_map(|character| character.to_uppercase())
-        .collect();
-    Ok(TotpDraft {
-        title,
-        notes: notes.to_string(),
-        totp: Totp::new(secret),
-    })
-}
-
 fn require_title(title: &str) -> Result<String, HostError> {
     let title = title.trim();
     if title.is_empty() {
@@ -624,6 +721,45 @@ fn require_title(title: &str) -> Result<String, HostError> {
     } else {
         Ok(title.to_string())
     }
+}
+
+fn normalize_secret(secret: &str) -> String {
+    secret
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(|character| character.to_uppercase())
+        .collect()
+}
+
+fn login_passwords(passwords: &[PasswordInput]) -> Result<Vec<LoginPassword>, HostError> {
+    for password in passwords {
+        if password.name.trim().is_empty() {
+            return Err(HostError::EmptyPasswordName);
+        }
+    }
+    Ok(passwords
+        .iter()
+        .map(|password| LoginPassword {
+            name: password.name.clone(),
+            password: password.password.clone(),
+        })
+        .collect())
+}
+
+fn custom_fields(fields: &[FieldInput]) -> Result<Vec<CustomField>, HostError> {
+    for field in fields {
+        if field.name.trim().is_empty() {
+            return Err(HostError::EmptyFieldName);
+        }
+    }
+    Ok(fields
+        .iter()
+        .map(|field| CustomField {
+            name: field.name.clone(),
+            value: field.value.clone(),
+            concealed: field.concealed,
+        })
+        .collect())
 }
 
 fn item_view(item: Item) -> ItemView {
@@ -650,7 +786,24 @@ fn item_view(item: Item) -> ItemView {
         conflict_copy: item.title.starts_with("冲突 "),
         notes: item.notes.clone(),
         username: item.login_username().map(ToOwned::to_owned),
-        password: item.login_password().map(ToOwned::to_owned),
+        passwords: item
+            .login_passwords()
+            .unwrap_or(&[])
+            .iter()
+            .map(|password| PasswordView {
+                name: password.name.clone(),
+                password: password.password.clone(),
+            })
+            .collect(),
+        custom_fields: item
+            .custom_fields
+            .iter()
+            .map(|field| FieldView {
+                name: field.name.clone(),
+                value: field.value.clone(),
+                concealed: field.concealed,
+            })
+            .collect(),
         totp_code,
         totp_remaining,
         totp_secret: item.totp_secret().map(ToOwned::to_owned),
@@ -795,12 +948,16 @@ mod tests {
         assert_eq!(created.status.phase, "unlocked");
         assert!(!created.recovery_key.trim().is_empty());
         drop(created);
-        host.create_note(TextItem {
-            title: "Hello",
-            notes: "body",
-            folder_id: None,
-            favorite: false,
-        })
+        host.create_note(
+            None,
+            &NoteWrite {
+                title: "Hello".to_string(),
+                notes: "body".to_string(),
+                custom_fields: Vec::new(),
+                folder_id: None,
+                favorite: false,
+            },
+        )
         .unwrap();
         host.idle_limit = Duration::from_millis(1);
         host.last_activity = Instant::now() - Duration::from_secs(5);
@@ -808,12 +965,16 @@ mod tests {
         assert_eq!(locked.phase, "locked");
         assert!(locked.idle_locked);
         assert!(locked.items.is_empty());
-        match host.create_note(TextItem {
-            title: "Later",
-            notes: "",
-            folder_id: None,
-            favorite: false,
-        }) {
+        match host.create_note(
+            None,
+            &NoteWrite {
+                title: "Later".to_string(),
+                notes: String::new(),
+                custom_fields: Vec::new(),
+                folder_id: None,
+                favorite: false,
+            },
+        ) {
             Err(HostError::Locked) => {}
             Err(error) => panic!("expected the idle lock to reject the note: {error}"),
             Ok(_) => panic!("expected the idle lock to reject the note"),
@@ -829,6 +990,171 @@ mod tests {
         let reopened = HostInner::open(&root).unwrap();
         assert_eq!(reopened.idle_minutes(), 12);
         drop(reopened);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn one_save_keeps_passwords_custom_fields_and_totp_parameters() {
+        use vault_core::TotpAlgorithm;
+
+        let root = std::env::temp_dir().join(format!(
+            "citripass-ui-desktop-fields-{}-{}",
+            std::process::id(),
+            unix_now()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut host = HostInner::open(&root).unwrap();
+        host.create_vault("fields-test-password").unwrap();
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        host.create_login(
+            None,
+            &LoginWrite {
+                title: "Mail".to_string(),
+                username: "ada".to_string(),
+                passwords: vec![
+                    PasswordInput {
+                        name: "密码".to_string(),
+                        password: "one".to_string(),
+                    },
+                    PasswordInput {
+                        name: "备用".to_string(),
+                        password: "two".to_string(),
+                    },
+                ],
+                notes: "desk".to_string(),
+                custom_fields: vec![FieldInput {
+                    name: "PIN".to_string(),
+                    value: "1234".to_string(),
+                    concealed: true,
+                }],
+                folder_id: None,
+                favorite: true,
+            },
+        )
+        .unwrap();
+        let created = host.status().unwrap();
+        let login = created
+            .items
+            .iter()
+            .find(|item| item.title == "Mail")
+            .unwrap();
+        assert_eq!(login.revision, 1);
+        assert_eq!(login.passwords.len(), 2);
+        assert_eq!(login.passwords[1].name, "备用");
+        assert_eq!(login.custom_fields.len(), 1);
+        let login_id = uuid::Uuid::parse_str(&login.item_id).unwrap();
+
+        host.create_totp(
+            None,
+            &TotpWrite {
+                title: "Door".to_string(),
+                secret: secret.to_string(),
+                notes: String::new(),
+                custom_fields: vec![FieldInput {
+                    name: "位置".to_string(),
+                    value: "大门".to_string(),
+                    concealed: false,
+                }],
+                folder_id: None,
+                favorite: false,
+            },
+        )
+        .unwrap();
+        let totp_id = {
+            let session = host.session().unwrap();
+            let item = session
+                .list_items()
+                .unwrap()
+                .into_iter()
+                .find(|item| item.title == "Door")
+                .unwrap();
+            let mut draft = item.content.clone();
+            if let ItemData::Totp { totp } = &mut draft.data {
+                totp.algorithm = TotpAlgorithm::Sha256;
+                totp.digits = 8;
+                totp.period = 45;
+            }
+            session.update_item(item.item_id, draft).unwrap();
+            item.item_id
+        };
+
+        host.update_login(
+            login_id,
+            None,
+            &LoginWrite {
+                title: "Mail".to_string(),
+                username: "ada".to_string(),
+                passwords: vec![
+                    PasswordInput {
+                        name: "密码".to_string(),
+                        password: "one".to_string(),
+                    },
+                    PasswordInput {
+                        name: "备用".to_string(),
+                        password: "two".to_string(),
+                    },
+                    PasswordInput {
+                        name: "应用".to_string(),
+                        password: String::new(),
+                    },
+                ],
+                notes: "desk".to_string(),
+                custom_fields: vec![FieldInput {
+                    name: "PIN".to_string(),
+                    value: "1234".to_string(),
+                    concealed: true,
+                }],
+                folder_id: None,
+                favorite: true,
+            },
+        )
+        .unwrap();
+        host.update_totp(
+            totp_id,
+            None,
+            &TotpWrite {
+                title: "Door".to_string(),
+                secret: secret.to_string(),
+                notes: "kept".to_string(),
+                custom_fields: vec![FieldInput {
+                    name: "位置".to_string(),
+                    value: "侧门".to_string(),
+                    concealed: false,
+                }],
+                folder_id: None,
+                favorite: false,
+            },
+        )
+        .unwrap();
+
+        let status = host.status().unwrap();
+        let login = status
+            .items
+            .iter()
+            .find(|item| item.title == "Mail")
+            .unwrap();
+        assert_eq!(login.revision, 2);
+        assert_eq!(login.passwords.len(), 3);
+        assert_eq!(login.passwords[2].password, "");
+        assert_eq!(login.custom_fields[0].value, "1234");
+        let door = status
+            .items
+            .iter()
+            .find(|item| item.title == "Door")
+            .unwrap();
+        assert_eq!(door.custom_fields[0].value, "侧门");
+        assert_eq!(door.notes, "kept");
+        let stored = host.session().unwrap().get_item(totp_id).unwrap();
+        match &stored.data {
+            ItemData::Totp { totp } => {
+                assert_eq!(totp.secret, secret);
+                assert_eq!(totp.algorithm, TotpAlgorithm::Sha256);
+                assert_eq!(totp.digits, 8);
+                assert_eq!(totp.period, 45);
+            }
+            _ => panic!("totp"),
+        }
+        drop(host);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
