@@ -336,6 +336,21 @@ button:disabled {
   font-weight: 450;
 }
 
+.option {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.option span {
+  display: grid;
+  gap: 2px;
+}
+
+.option small {
+  color: var(--ink-soft);
+  font-weight: 450;
+}
+
 .kind input,
 .check input,
 .inline input {
@@ -382,6 +397,50 @@ button:disabled {
 .hint {
   margin: 0;
   color: var(--ink-soft);
+}
+
+.generator {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.strength {
+  display: grid;
+  gap: 4px;
+  font-weight: 450;
+  color: var(--ink-soft);
+}
+
+.strength-bar {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+
+.strength-bar span {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--line);
+}
+
+.strength-bar span.on {
+  background: #a33b24;
+}
+
+.strength-bar.s2 span.on {
+  background: #b07a12;
+}
+
+.strength-bar.s3 span.on {
+  background: #2f7d4a;
+}
+
+.strength-bar.s4 span.on {
+  background: var(--leaf);
 }
 
 @media (min-width: 800px) {

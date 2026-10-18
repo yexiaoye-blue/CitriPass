@@ -9,8 +9,8 @@ use uuid::Uuid;
 use zeroize::Zeroize;
 
 use crate::host::{
-    CreatedVault, HostInner, HostStatus, ItemView, LoginUpdate, LoginWrite, NoteUpdate, NoteWrite,
-    TotpUpdate, TotpWrite,
+    CreatedVault, GenerateRequest, HostInner, HostStatus, ItemView, LoginUpdate, LoginWrite,
+    NoteUpdate, NoteWrite, StrengthRequest, StrengthView, TotpUpdate, TotpWrite,
 };
 
 struct SharedHost(Arc<Mutex<HostInner>>);
@@ -66,7 +66,8 @@ pub fn run() {
             delete_item,
             search_items,
             sync_vault,
-            generate_password
+            generate_password,
+            password_strength
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -318,8 +319,13 @@ async fn sync_vault(host: State<'_, SharedHost>, endpoint: String) -> Result<Hos
 }
 
 #[tauri::command]
-fn generate_password(length: u32) -> Result<String, String> {
-    host::generated_password(length).map_err(|error| error.to_string())
+fn generate_password(options: GenerateRequest) -> Result<String, String> {
+    host::generated_secret(&options).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn password_strength(body: StrengthRequest) -> StrengthView {
+    host::measured_strength(&body.password, &body.user_inputs)
 }
 
 fn lock_arc(host: &Arc<Mutex<HostInner>>) -> std::sync::MutexGuard<'_, HostInner> {

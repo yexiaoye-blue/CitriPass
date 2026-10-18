@@ -10,6 +10,7 @@ import {
   generatePassword,
   inDesktop,
   lockVault,
+  passwordStrength,
   searchItems,
   setIdleMinutes,
   syncVault,
@@ -22,6 +23,8 @@ import {
   vaultStatus,
   type HostStatus,
   type ItemView,
+  type GenerateOptions,
+  type Strength,
   type SyncView,
 } from "./api";
 
@@ -242,6 +245,7 @@ function CreateForm({
           spellCheck={false}
           onChange={(event) => setPassword(event.target.value)}
         />
+        <StrengthMeter password={password} />
       </label>
       <label>
         再输入一次
@@ -644,6 +648,259 @@ type FieldDraft = {
   visible: boolean;
 };
 
+type GeneratorState = {
+  mode: "password" | "passphrase";
+  length: string;
+  lowercase: boolean;
+  uppercase: boolean;
+  digits: boolean;
+  symbols: boolean;
+  avoidAmbiguous: boolean;
+  minDigits: string;
+  minSymbols: string;
+  words: string;
+  separator: string;
+  capitalize: boolean;
+  includeNumber: boolean;
+};
+
+const STRENGTH_LABELS = ["很弱", "弱", "一般", "良好", "强"];
+
+function generatorOptions(generator: GeneratorState): GenerateOptions {
+  return {
+    mode: generator.mode,
+    length: Number(generator.length),
+    lowercase: generator.lowercase,
+    uppercase: generator.uppercase,
+    digits: generator.digits,
+    symbols: generator.symbols,
+    avoidAmbiguous: generator.avoidAmbiguous,
+    minDigits: Number(generator.minDigits),
+    minSymbols: Number(generator.minSymbols),
+    words: Number(generator.words),
+    separator: generator.separator,
+    capitalize: generator.capitalize,
+    includeNumber: generator.includeNumber,
+  };
+}
+
+function StrengthMeter({
+  password,
+  username = "",
+  title = "",
+}: {
+  password: string;
+  username?: string;
+  title?: string;
+}) {
+  const [result, setResult] = useState<Strength | null>(null);
+  useEffect(() => {
+    if (!password) {
+      setResult(null);
+      return;
+    }
+    let cancel = false;
+    const timer = setTimeout(() => {
+      const hints = [username, title].map((item) => item.trim()).filter((item) => item.length > 0);
+      void passwordStrength(password, hints)
+        .then((value) => {
+          if (!cancel) {
+            setResult(value);
+          }
+        })
+        .catch(() => {
+          if (!cancel) {
+            setResult(null);
+          }
+        });
+    }, 150);
+    return () => {
+      cancel = true;
+      clearTimeout(timer);
+    };
+  }, [password, username, title]);
+  if (!password || !result) {
+    return null;
+  }
+  const score = Math.min(4, Math.max(0, result.score));
+  return (
+    <div className="strength" aria-live="polite">
+      <div className={"strength-bar s" + String(score)}>
+        {[0, 1, 2, 3, 4].map((segment) => (
+          <span key={segment} className={segment <= score ? "on" : ""} />
+        ))}
+      </div>
+      <span>
+        {STRENGTH_LABELS[score]}
+        {result.warning ? " · " + result.warning : ""}
+      </span>
+    </div>
+  );
+}
+
+function GeneratorControls({
+  value,
+  onChange,
+}: {
+  value: GeneratorState;
+  onChange: (value: GeneratorState) => void;
+}) {
+  return (
+    <div className="generator">
+      <div className="kind">
+        <label>
+          <input
+            type="radio"
+            name="generator"
+            checked={value.mode === "password"}
+            onChange={() => onChange({ ...value, mode: "password" })}
+          />
+          随机密码
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="generator"
+            checked={value.mode === "passphrase"}
+            onChange={() => onChange({ ...value, mode: "passphrase" })}
+          />
+          单词短语
+        </label>
+      </div>
+      {value.mode === "password" ? (
+        <>
+          <label>
+            密码长度：{value.length}
+            <input
+              type="range"
+              min={8}
+              max={128}
+              value={value.length}
+              onChange={(event) => onChange({ ...value, length: event.target.value })}
+            />
+          </label>
+          <label className="check option">
+            <span>
+              小写字符
+              <small>使用小写字符 a 到 z</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={value.lowercase}
+              onChange={(event) => onChange({ ...value, lowercase: event.target.checked })}
+            />
+          </label>
+          <label className="check option">
+            <span>
+              大写字符
+              <small>使用大写字符 A 到 Z</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={value.uppercase}
+              onChange={(event) => onChange({ ...value, uppercase: event.target.checked })}
+            />
+          </label>
+          <label className="check option">
+            <span>
+              数字
+              <small>使用数字 0 到 9</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={value.digits}
+              onChange={(event) => onChange({ ...value, digits: event.target.checked })}
+            />
+          </label>
+          <label className="check option">
+            <span>
+              特殊字符
+              <small>使用特殊字符 !@#$%^*_-</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={value.symbols}
+              onChange={(event) => onChange({ ...value, symbols: event.target.checked })}
+            />
+          </label>
+          <label className="check option">
+            <span>
+              无易混淆字符
+              <small>去除易混淆字符 IOilo01</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={value.avoidAmbiguous}
+              onChange={(event) => onChange({ ...value, avoidAmbiguous: event.target.checked })}
+            />
+          </label>
+          {value.digits ? (
+            <label className="inline">
+              最少数字
+              <input
+                type="number"
+                min={1}
+                max={32}
+                value={value.minDigits}
+                onChange={(event) => onChange({ ...value, minDigits: event.target.value })}
+              />
+            </label>
+          ) : null}
+          {value.symbols ? (
+            <label className="inline">
+              最少符号
+              <input
+                type="number"
+                min={1}
+                max={32}
+                value={value.minSymbols}
+                onChange={(event) => onChange({ ...value, minSymbols: event.target.value })}
+              />
+            </label>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <label className="inline">
+            单词数
+            <input
+              type="number"
+              min={3}
+              max={20}
+              value={value.words}
+              onChange={(event) => onChange({ ...value, words: event.target.value })}
+            />
+          </label>
+          <label>
+            分隔符
+            <input
+              value={value.separator}
+              onChange={(event) => onChange({ ...value, separator: event.target.value })}
+            />
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={value.capitalize}
+              onChange={(event) => onChange({ ...value, capitalize: event.target.checked })}
+            />
+            首字母大写
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={value.includeNumber}
+              onChange={(event) => onChange({ ...value, includeNumber: event.target.checked })}
+            />
+            给一个单词加数字
+          </label>
+        </>
+      )}
+      <p className="hint">使用操作系统的安全随机数。勾选的字符类都会至少出现一次。</p>
+    </div>
+  );
+}
+
 function ItemEditor({
   selected,
   folders,
@@ -686,7 +943,21 @@ function ItemEditor({
   const [secret, setSecret] = useState(selected?.totpSecret ?? "");
   const [folderId, setFolderId] = useState(selected?.folderId ?? defaultFolderId ?? "");
   const [favorite, setFavorite] = useState(selected?.favorite ?? false);
-  const [length, setLength] = useState("24");
+  const [generator, setGenerator] = useState<GeneratorState>({
+    mode: "password",
+    length: "24",
+    lowercase: true,
+    uppercase: true,
+    digits: true,
+    symbols: true,
+    avoidAmbiguous: false,
+    minDigits: "1",
+    minSymbols: "1",
+    words: "6",
+    separator: "-",
+    capitalize: false,
+    includeNumber: false,
+  });
   const [confirming, setConfirming] = useState(false);
   const [localError, setLocalError] = useState("");
   const shownKind = fixedKind ?? kind;
@@ -749,7 +1020,7 @@ function ItemEditor({
   async function fillPassword(index: number) {
     setLocalError("");
     try {
-      const generated = await generatePassword(Number(length));
+      const generated = await generatePassword(generatorOptions(generator));
       setPasswords((current) =>
         current.map((entry, entryIndex) =>
           entryIndex === index ? { ...entry, password: generated } : entry,
@@ -857,6 +1128,7 @@ function ItemEditor({
                     )
                   }
                 />
+                <StrengthMeter password={entry.password} username={username} title={title} />
               </label>
               <div className="row-actions">
                 <button
@@ -897,17 +1169,8 @@ function ItemEditor({
             >
               添加密码
             </button>
-            <label className="inline">
-              长度
-              <input
-                type="number"
-                min={8}
-                max={1024}
-                value={length}
-                onChange={(event) => setLength(event.target.value)}
-              />
-            </label>
           </div>
+          <GeneratorControls value={generator} onChange={setGenerator} />
         </fieldset>
       ) : null}
       <fieldset className="repeat">

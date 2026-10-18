@@ -13,7 +13,8 @@ use thiserror::Error;
 use uuid::Uuid;
 use vault_attachment_store::FileAttachmentStore;
 use vault_core::{
-    generate_password, CustomField, Item, ItemData, ItemDraft, LoginPassword, PasswordOptions, Totp,
+    generate_passphrase, generate_password, password_strength, CustomField, Item, ItemData,
+    ItemDraft, LoginPassword, PassphraseOptions, PasswordOptions, Totp,
 };
 use vault_storage::{SessionError, VaultSession, VaultStore, VaultStoreTransaction};
 use vault_storage_sqlite::{SqliteStore, SqliteStoreError};
@@ -58,6 +59,8 @@ pub(crate) enum HostError {
     EmptyPasswordName,
     #[error("自定义字段的名称不能是空白")]
     EmptyFieldName,
+    #[error("生成方式无法识别")]
+    UnknownGenerator,
     #[error("条目编号无法识别")]
     BadId,
     #[error("这条条目类型不对")]
@@ -119,6 +122,38 @@ pub(crate) struct ItemView {
 pub(crate) struct PasswordView {
     pub(crate) name: String,
     pub(crate) password: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GenerateRequest {
+    pub(crate) mode: String,
+    pub(crate) length: u32,
+    pub(crate) lowercase: bool,
+    pub(crate) uppercase: bool,
+    pub(crate) digits: bool,
+    pub(crate) symbols: bool,
+    pub(crate) avoid_ambiguous: bool,
+    pub(crate) min_digits: u32,
+    pub(crate) min_symbols: u32,
+    pub(crate) words: u32,
+    pub(crate) separator: String,
+    pub(crate) capitalize: bool,
+    pub(crate) include_number: bool,
+}
+
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StrengthRequest {
+    pub(crate) password: String,
+    pub(crate) user_inputs: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StrengthView {
+    pub(crate) score: u8,
+    pub(crate) warning: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -704,14 +739,40 @@ struct HoldingView {
     device_id: Option<String>,
 }
 
-pub(crate) fn generated_password(length: u32) -> Result<String, HostError> {
-    let options = PasswordOptions {
-        length: usize::try_from(length).unwrap_or(usize::MAX),
-        ..PasswordOptions::default()
+pub(crate) fn generated_secret(request: &GenerateRequest) -> Result<String, HostError> {
+    let secret = if request.mode == "passphrase" {
+        generate_passphrase(&PassphraseOptions {
+            words: usize::try_from(request.words).unwrap_or(usize::MAX),
+            separator: request.separator.clone(),
+            capitalize: request.capitalize,
+            include_number: request.include_number,
+        })
+    } else if request.mode == "password" {
+        generate_password(&PasswordOptions {
+            length: usize::try_from(request.length).unwrap_or(usize::MAX),
+            lowercase: request.lowercase,
+            uppercase: request.uppercase,
+            digits: request.digits,
+            symbols: request.symbols,
+            avoid_ambiguous: request.avoid_ambiguous,
+            min_digits: usize::try_from(request.min_digits).unwrap_or(usize::MAX),
+            min_symbols: usize::try_from(request.min_symbols).unwrap_or(usize::MAX),
+        })
+    } else {
+        return Err(HostError::UnknownGenerator);
     };
-    generate_password(&options)
-        .map(|password| password.to_string())
+    secret
+        .map(|value| value.to_string())
         .map_err(|error| HostError::Protocol(explain(error)))
+}
+
+pub(crate) fn measured_strength(password: &str, user_inputs: &[String]) -> StrengthView {
+    let inputs: Vec<&str> = user_inputs.iter().map(String::as_str).collect();
+    let strength = password_strength(password, &inputs);
+    StrengthView {
+        score: strength.score,
+        warning: strength.warning,
+    }
 }
 
 fn require_title(title: &str) -> Result<String, HostError> {

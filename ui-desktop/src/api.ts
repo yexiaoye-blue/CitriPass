@@ -187,8 +187,33 @@ export function syncVault(endpoint: string): Promise<HostStatus> {
   return invoke("sync_vault", { endpoint });
 }
 
-export function generatePassword(length: number): Promise<string> {
-  return invoke("generate_password", { length });
+export interface GenerateOptions {
+  mode: "password" | "passphrase";
+  length: number;
+  lowercase: boolean;
+  uppercase: boolean;
+  digits: boolean;
+  symbols: boolean;
+  avoidAmbiguous: boolean;
+  minDigits: number;
+  minSymbols: number;
+  words: number;
+  separator: string;
+  capitalize: boolean;
+  includeNumber: boolean;
+}
+
+export interface Strength {
+  score: number;
+  warning: string;
+}
+
+export function generatePassword(options: GenerateOptions): Promise<string> {
+  return invoke("generate_password", { options });
+}
+
+export function passwordStrength(password: string, userInputs: string[]): Promise<Strength> {
+  return invoke("password_strength", { body: { password, userInputs } });
 }
 
 export function errorText(error: unknown): string {
