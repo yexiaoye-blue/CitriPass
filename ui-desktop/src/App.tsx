@@ -29,6 +29,29 @@ import {
 } from "./api";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:18081";
+const THEME_STORAGE_KEY = "citripass-theme";
+
+type Theme = "light" | "dark";
+
+function readTheme(): Theme {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "light" || stored === "dark") {
+      return stored;
+    }
+  } catch {
+    // Fall back to the system preference when storage is unavailable.
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme: Theme) {
+  document.documentElement.classList.toggle("dark", theme === "dark");
+  document.documentElement.style.colorScheme = theme;
+}
 
 export function App() {
   const desktop = inDesktop();
@@ -37,6 +60,16 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [theme, setTheme] = useState<Theme>(readTheme);
+
+  useEffect(() => {
+    applyTheme(theme);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // The theme still applies for this session when storage is unavailable.
+    }
+  }, [theme]);
 
   useEffect(() => {
     if (!desktop) {
@@ -131,7 +164,10 @@ export function App() {
   return (
     <main className="page" aria-busy={busy}>
       <header>
-        <h1>CitriPass</h1>
+        <div className="page-heading">
+          <h1>CitriPass</h1>
+          <ThemeToggle theme={theme} onToggle={() => setTheme((value) => (value === "dark" ? "light" : "dark"))} />
+        </div>
         <p className="lede">
           这台电脑上的一本保险库。可以记下登录、笔记和验证码，放进文件夹，标成收藏，也可以同步到本机的同步服务。
         </p>
@@ -176,6 +212,22 @@ export function App() {
         />
       ) : null}
     </main>
+  );
+}
+
+function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  const dark = theme === "dark";
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      aria-pressed={dark}
+      aria-label={dark ? "当前为深色模式，切换到浅色模式" : "当前为浅色模式，切换到深色模式"}
+      onClick={onToggle}
+    >
+      <span>主题</span>
+      <strong>{dark ? "深色" : "浅色"}</strong>
+    </button>
   );
 }
 
