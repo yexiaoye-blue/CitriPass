@@ -3,15 +3,22 @@ package syncsvc
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/yexiaoye-blue/CitriPass/sync-service/internal/auth"
 	"github.com/yexiaoye-blue/CitriPass/sync-service/internal/record"
 )
 
 // Memory is an in-process store for the sync rules.
 type Memory struct {
-	mu     sync.Mutex
-	vaults map[uuid.UUID]*memVault
+	mu           sync.Mutex
+	vaults       map[uuid.UUID]*memVault
+	accounts     map[string]auth.Account
+	sessions     map[string]auth.Session
+	devices      map[uuid.UUID]auth.Device
+	deviceTokens map[string]auth.DeviceToken
+	vaultAccess  map[uuid.UUID]map[uuid.UUID]struct{}
 }
 
 type memVault struct {
@@ -23,7 +30,153 @@ type memVault struct {
 
 // NewMemory returns an empty store.
 func NewMemory() *Memory {
-	return &Memory{vaults: map[uuid.UUID]*memVault{}}
+	return &Memory{
+		vaults:       map[uuid.UUID]*memVault{},
+		accounts:     map[string]auth.Account{},
+		sessions:     map[string]auth.Session{},
+		devices:      map[uuid.UUID]auth.Device{},
+		deviceTokens: map[string]auth.DeviceToken{},
+		vaultAccess:  map[uuid.UUID]map[uuid.UUID]struct{}{},
+	}
+}
+
+func (m *Memory) CreateAccountAndSession(
+	_ context.Context,
+	accountID uuid.UUID,
+	email string,
+	passwordHash string,
+	sessionTokenHash []byte,
+	sessionExpiresAt time.Time,
+	createdAt time.Time,
+) (auth.Account, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.accounts[email]; exists {
+		return auth.Account{}, auth.ErrConflict
+	}
+	account := auth.Account{ID: accountID, Email: email, PasswordHash: passwordHash}
+	m.accounts[email] = account
+	m.sessions[string(sessionTokenHash)] = auth.Session{AccountID: accountID, ExpiresAt: sessionExpiresAt}
+	_ = createdAt
+	return account, nil
+}
+
+func (m *Memory) FindAccountByEmail(_ context.Context, email string) (auth.Account, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	account, ok := m.accounts[email]
+	return account, ok, nil
+}
+
+func (m *Memory) CreateSession(_ context.Context, accountID uuid.UUID, tokenHash []byte, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[string(tokenHash)] = auth.Session{AccountID: accountID, ExpiresAt: expiresAt}
+	return nil
+}
+
+func (m *Memory) Session(_ context.Context, tokenHash []byte, now time.Time) (auth.Session, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	session, ok := m.sessions[string(tokenHash)]
+	if !ok || !now.Before(session.ExpiresAt) {
+		return auth.Session{}, false, nil
+	}
+	return session, true, nil
+}
+
+func (m *Memory) RevokeSession(_ context.Context, tokenHash []byte, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, string(tokenHash))
+	return nil
+}
+
+func (m *Memory) ListDevices(_ context.Context, accountID uuid.UUID) ([]auth.Device, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	devices := make([]auth.Device, 0)
+	for _, device := range m.devices {
+		if device.AccountID == accountID {
+			devices = append(devices, device)
+		}
+	}
+	return devices, nil
+}
+
+func (m *Memory) CreateDevice(
+	_ context.Context,
+	accountID uuid.UUID,
+	deviceID uuid.UUID,
+	name string,
+	deviceTokenHash []byte,
+	createdAt time.Time,
+	expiresAt time.Time,
+) (auth.Device, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	device := auth.Device{ID: deviceID, AccountID: accountID, Name: name, CreatedAt: createdAt}
+	m.devices[deviceID] = device
+	m.deviceTokens[string(deviceTokenHash)] = auth.DeviceToken{
+		DeviceID: deviceID, AccountID: accountID, ExpiresAt: expiresAt,
+	}
+	return device, nil
+}
+
+func (m *Memory) RevokeDevice(_ context.Context, accountID, deviceID uuid.UUID, revokedAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	device, ok := m.devices[deviceID]
+	if !ok || device.AccountID != accountID {
+		return false, nil
+	}
+	if device.RevokedAt == nil {
+		revoked := revokedAt
+		device.RevokedAt = &revoked
+		m.devices[deviceID] = device
+	}
+	for token, value := range m.deviceTokens {
+		if value.DeviceID == deviceID {
+			delete(m.deviceTokens, token)
+		}
+	}
+	return true, nil
+}
+
+func (m *Memory) DeviceToken(_ context.Context, tokenHash []byte, now time.Time) (auth.DeviceToken, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deviceToken, ok := m.deviceTokens[string(tokenHash)]
+	if !ok || !now.Before(deviceToken.ExpiresAt) {
+		return auth.DeviceToken{}, false, nil
+	}
+	device, ok := m.devices[deviceToken.DeviceID]
+	if !ok || device.RevokedAt != nil {
+		return auth.DeviceToken{}, false, nil
+	}
+	return deviceToken, true, nil
+}
+
+func (m *Memory) CreateVault(_ context.Context, accountID, vaultID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.vaults[vaultID]; exists {
+		return auth.ErrConflict
+	}
+	if _, exists := m.vaultAccess[vaultID]; exists {
+		return auth.ErrConflict
+	}
+	m.vaults[vaultID] = &memVault{items: map[uuid.UUID]record.Record{}, ops: map[uuid.UUID]Remembered{}}
+	m.vaultAccess[vaultID] = map[uuid.UUID]struct{}{accountID: {}}
+	return nil
+}
+
+func (m *Memory) HasVaultAccess(_ context.Context, accountID, vaultID uuid.UUID) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	accounts := m.vaultAccess[vaultID]
+	_, ok := accounts[accountID]
+	return ok, nil
 }
 
 // Begin starts a transaction over a copy of the store.
