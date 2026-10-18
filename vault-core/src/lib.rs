@@ -12,6 +12,7 @@ mod item;
 mod limits;
 mod password;
 mod recovery;
+mod strength;
 mod totp;
 mod vault;
 mod wire;
@@ -26,8 +27,9 @@ pub use item::{
     LEGACY_LOGIN_PASSWORD_NAME,
 };
 pub use limits::ATTACHMENT_CHUNK_SIZE;
-pub use password::{generate_password, PasswordOptions};
+pub use password::{generate_passphrase, generate_password, PassphraseOptions, PasswordOptions};
 pub use recovery::RecoveryKey;
+pub use strength::{password_strength, PasswordStrength};
 pub use totp::{Hotp, Otp, Totp, TotpAlgorithm};
 pub use vault::UnlockedVault;
 pub use wire::{SealedItem, SealedVault};

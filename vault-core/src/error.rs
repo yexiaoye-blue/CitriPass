@@ -50,6 +50,19 @@ pub enum InputError {
     },
     /// Password generation was asked for an empty alphabet.
     NoCharacterGroups,
+    /// Avoiding ambiguous characters removed every character from a selected group.
+    EmptyCharacterGroup,
+    /// Minimum character counts cannot fit in the requested length.
+    InvalidPasswordConstraints,
+    /// A passphrase was asked for too few or too many words.
+    InvalidPassphraseWordCount {
+        /// Minimum number of words.
+        min: usize,
+        /// Maximum number of words.
+        max: usize,
+    },
+    /// The passphrase separator is too long or contains a control character.
+    InvalidPassphraseSeparator,
     /// The TOTP secret is not unpadded uppercase Base32.
     InvalidTotpSecretEncoding,
     /// The decoded TOTP secret is shorter than 128 bits.
@@ -132,6 +145,10 @@ impl fmt::Display for InputError {
             Self::PayloadTooLarge { max_bytes } => write!(f, "Plaintext payload must not exceed {max_bytes} bytes"),
             Self::InvalidPasswordLength { min, max } => write!(f, "Generated password length must be between {min} and {max} characters"),
             Self::NoCharacterGroups => f.write_str("Select at least one password character group"),
+            Self::EmptyCharacterGroup => f.write_str("Avoiding ambiguous characters removed a selected character group"),
+            Self::InvalidPasswordConstraints => f.write_str("Password length cannot fit the required characters"),
+            Self::InvalidPassphraseWordCount { min, max } => write!(f, "Passphrase must contain between {min} and {max} words"),
+            Self::InvalidPassphraseSeparator => f.write_str("Passphrase separator must be at most 16 characters and contain no control characters"),
             Self::InvalidTotpSecretEncoding => f.write_str("TOTP secret must be unpadded uppercase Base32"),
             Self::TotpSecretTooShort { min_bits } => write!(f, "TOTP secret must contain at least {min_bits} bits"),
             Self::InvalidTotpDigits { min, max } => write!(f, "TOTP digit count must be between {min} and {max}"),
