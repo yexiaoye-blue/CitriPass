@@ -18,8 +18,10 @@ use vault_core::{
 };
 use vault_storage::{SessionError, VaultSession, VaultStore, VaultStoreTransaction};
 use vault_storage_sqlite::{SqliteStore, SqliteStoreError};
-use vault_sync::{sync_items, HttpSyncError, HttpSyncTransport, SyncReport};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use vault_sync::{
+    sync_items, HttpAuthClient, HttpAuthError, HttpSyncError, HttpSyncTransport, SyncReport,
+};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const DEFAULT_IDLE_MINUTES: u32 = 5;
 const MIN_IDLE_MINUTES: u32 = 1;
@@ -32,6 +34,7 @@ pub(crate) struct HostInner {
     attachments: FileAttachmentStore,
     phase: Phase,
     last_sync: Option<SyncView>,
+    sync_auth: Option<SyncAuthState>,
     idle_limit: Duration,
     last_activity: Instant,
     idle_locked: bool,
@@ -79,6 +82,8 @@ pub(crate) enum HostError {
     Protocol(String),
     #[error("同步没有完成：{0}")]
     Sync(String),
+    #[error("同步需要先完成账号和设备授权")]
+    SyncAuthRequired,
 }
 
 #[derive(Clone, Serialize)]
@@ -94,6 +99,7 @@ pub(crate) struct HostStatus {
     pub(crate) idle_locked: bool,
     pub(crate) items: Vec<ItemView>,
     pub(crate) last_sync: Option<SyncView>,
+    pub(crate) sync_auth: Option<SyncAuthView>,
 }
 
 #[derive(Clone, Serialize)]
@@ -172,6 +178,32 @@ pub(crate) struct SyncView {
     pub(crate) conflicts: usize,
     pub(crate) pulled: usize,
     pub(crate) cursor: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncAuthView {
+    pub(crate) email: String,
+    pub(crate) device_id: String,
+    pub(crate) ready: bool,
+}
+
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncAuthRequest {
+    pub(crate) endpoint: String,
+    pub(crate) email: String,
+    pub(crate) password: String,
+    pub(crate) device_name: String,
+}
+
+struct SyncAuthState {
+    endpoint: String,
+    email: String,
+    session_token: Zeroizing<String>,
+    device_token: Zeroizing<String>,
+    device_id: Uuid,
+    vault_id: Uuid,
 }
 
 /// Returned once. The host does not keep the recovery key after this value is built.
@@ -272,6 +304,7 @@ impl HostInner {
             attachments,
             phase: Phase::Holding(store),
             last_sync: None,
+            sync_auth: None,
             idle_limit: Duration::from_secs(u64::from(idle_minutes) * 60),
             last_activity: Instant::now(),
             idle_locked: false,
@@ -597,11 +630,16 @@ impl HostInner {
 
     pub(crate) fn sync(&mut self, endpoint: &str) -> Result<HostStatus, HostError> {
         self.begin_activity()?;
+        let auth = self.sync_auth.as_ref().ok_or(HostError::SyncAuthRequired)?;
+        if auth.endpoint != endpoint.trim() {
+            return Err(HostError::SyncAuthRequired);
+        }
         let mut transport = match HttpSyncTransport::new(endpoint.trim()) {
             Ok(transport) => transport,
             Err(HttpSyncError::Url) => return Err(HostError::BadUrl),
             Err(error) => return Err(HostError::Sync(error.to_string())),
-        };
+        }
+        .with_device_token(auth.device_token.to_string());
         let report = {
             let session = self.session()?;
             sync_items(session, &mut transport)
@@ -609,6 +647,77 @@ impl HostInner {
         };
         self.last_sync = Some(sync_view(report));
         self.snapshot()
+    }
+
+    pub(crate) fn sync_register(
+        &mut self,
+        request: &SyncAuthRequest,
+    ) -> Result<HostStatus, HostError> {
+        self.sync_authenticate(request, true)
+    }
+
+    pub(crate) fn sync_login(
+        &mut self,
+        request: &SyncAuthRequest,
+    ) -> Result<HostStatus, HostError> {
+        self.sync_authenticate(request, false)
+    }
+
+    pub(crate) fn sync_logout(&mut self) -> Result<HostStatus, HostError> {
+        if let Some(auth) = self.sync_auth.take() {
+            if let Ok(client) = HttpAuthClient::new(&auth.endpoint) {
+                let _ = client.revoke_device(&auth.session_token, auth.device_id);
+                let _ = client.logout(&auth.session_token);
+            }
+        }
+        self.snapshot()
+    }
+
+    fn sync_authenticate(
+        &mut self,
+        request: &SyncAuthRequest,
+        register: bool,
+    ) -> Result<HostStatus, HostError> {
+        self.begin_activity()?;
+        let (vault_id, device_id) = self.local_ids()?;
+        let endpoint = request.endpoint.trim().to_string();
+        let client = HttpAuthClient::new(&endpoint).map_err(auth_error)?;
+        let session = if register {
+            client.register(&request.email, &request.password)
+        } else {
+            client.login(&request.email, &request.password)
+        }
+        .map_err(auth_error)?;
+        let device = client
+            .create_device(&session.session_token, device_id, &request.device_name)
+            .map_err(auth_error)?;
+        let returned_device_id = Uuid::parse_str(&device.device_id)
+            .map_err(|_| HostError::Protocol("同步服务返回了错误的设备编号".into()))?;
+        if returned_device_id != device_id {
+            return Err(HostError::Protocol("同步服务没有绑定当前设备编号".into()));
+        }
+        if let Err(error) = client.create_vault(&session.session_token, vault_id) {
+            if !error.to_string().contains("conflict (409)") {
+                return Err(auth_error(error));
+            }
+        }
+        self.sync_auth = Some(SyncAuthState {
+            endpoint,
+            email: session.email,
+            session_token: Zeroizing::new(session.session_token),
+            device_token: Zeroizing::new(device.device_token),
+            device_id,
+            vault_id,
+        });
+        self.snapshot()
+    }
+
+    fn local_ids(&mut self) -> Result<(Uuid, Uuid), HostError> {
+        match &mut self.phase {
+            Phase::Unlocked(session) => Ok((session.vault().vault_id(), session.device_id())),
+            Phase::Holding(_) => Err(HostError::Locked),
+            Phase::Closed => Err(HostError::Closed),
+        }
     }
 
     fn begin_activity(&mut self) -> Result<(), HostError> {
@@ -702,6 +811,15 @@ impl HostInner {
                 )
             }
         };
+        let sync_auth = self.sync_auth.as_ref().map(|auth| SyncAuthView {
+            email: auth.email.clone(),
+            device_id: auth.device_id.to_string(),
+            ready: vault_id
+                .as_ref()
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .map(|value| value == auth.vault_id)
+                .unwrap_or(false),
+        });
         Ok(HostStatus {
             root: self.root.display().to_string(),
             database_path: self.database.display().to_string(),
@@ -713,6 +831,7 @@ impl HostInner {
             idle_locked: self.idle_locked,
             items,
             last_sync: self.last_sync.clone(),
+            sync_auth,
         })
     }
 
@@ -953,6 +1072,13 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0)
+}
+
+fn auth_error(error: HttpAuthError) -> HostError {
+    match error {
+        HttpAuthError::Url => HostError::BadUrl,
+        other => HostError::Sync(other.to_string()),
+    }
 }
 
 fn session_err(error: SessionError<SqliteStoreError>) -> HostError {

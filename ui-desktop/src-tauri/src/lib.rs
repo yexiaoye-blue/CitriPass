@@ -10,7 +10,7 @@ use zeroize::Zeroize;
 
 use crate::host::{
     CreatedVault, GenerateRequest, HostInner, HostStatus, ItemView, LoginUpdate, LoginWrite,
-    NoteUpdate, NoteWrite, StrengthRequest, StrengthView, TotpUpdate, TotpWrite,
+    NoteUpdate, NoteWrite, StrengthRequest, StrengthView, SyncAuthRequest, TotpUpdate, TotpWrite,
 };
 
 struct SharedHost(Arc<Mutex<HostInner>>);
@@ -66,6 +66,9 @@ pub fn run() {
             delete_item,
             search_items,
             sync_vault,
+            sync_register,
+            sync_login,
+            sync_logout,
             generate_password,
             password_strength
         ])
@@ -313,6 +316,45 @@ async fn sync_vault(host: State<'_, SharedHost>, endpoint: String) -> Result<Hos
     blocking(move || {
         lock_arc(&shared)
             .sync(&endpoint)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sync_register(
+    host: State<'_, SharedHost>,
+    body: SyncAuthRequest,
+) -> Result<HostStatus, String> {
+    let shared = Arc::clone(&host.0);
+    blocking(move || {
+        lock_arc(&shared)
+            .sync_register(&body)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sync_login(
+    host: State<'_, SharedHost>,
+    body: SyncAuthRequest,
+) -> Result<HostStatus, String> {
+    let shared = Arc::clone(&host.0);
+    blocking(move || {
+        lock_arc(&shared)
+            .sync_login(&body)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sync_logout(host: State<'_, SharedHost>) -> Result<HostStatus, String> {
+    let shared = Arc::clone(&host.0);
+    blocking(move || {
+        lock_arc(&shared)
+            .sync_logout()
             .map_err(|error| error.to_string())
     })
     .await

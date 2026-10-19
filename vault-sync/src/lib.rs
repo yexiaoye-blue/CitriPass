@@ -18,7 +18,9 @@ use vault_core::SealedItem;
 use vault_storage::{PendingOperation, SyncCursor};
 
 pub use engine::{sync_items, SyncError, SyncReport};
-pub use http::{HttpSyncError, HttpSyncTransport};
+pub use http::{
+    AuthSession, DeviceCredentials, HttpAuthClient, HttpAuthError, HttpSyncError, HttpSyncTransport,
+};
 pub use memory::{MemoryServer, MemorySyncError};
 
 /// Port implemented by a remote item sync service.

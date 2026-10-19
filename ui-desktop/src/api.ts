@@ -40,6 +40,12 @@ export interface SyncView {
   cursor: string;
 }
 
+export interface SyncAuthView {
+  email: string;
+  deviceId: string;
+  ready: boolean;
+}
+
 export interface HostStatus {
   root: string;
   databasePath: string;
@@ -51,6 +57,7 @@ export interface HostStatus {
   idleLocked: boolean;
   items: ItemView[];
   lastSync: SyncView | null;
+  syncAuth: SyncAuthView | null;
 }
 
 export interface CreatedVault {
@@ -185,6 +192,28 @@ export function searchItems(query: string): Promise<ItemView[]> {
 
 export function syncVault(endpoint: string): Promise<HostStatus> {
   return invoke("sync_vault", { endpoint });
+}
+
+export function syncRegister(
+  endpoint: string,
+  email: string,
+  password: string,
+  deviceName: string,
+): Promise<HostStatus> {
+  return invoke("sync_register", { body: { endpoint, email, password, deviceName } });
+}
+
+export function syncLogin(
+  endpoint: string,
+  email: string,
+  password: string,
+  deviceName: string,
+): Promise<HostStatus> {
+  return invoke("sync_login", { body: { endpoint, email, password, deviceName } });
+}
+
+export function syncLogout(): Promise<HostStatus> {
+  return invoke("sync_logout");
 }
 
 export interface GenerateOptions {

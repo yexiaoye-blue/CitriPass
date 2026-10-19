@@ -361,6 +361,7 @@ label {
 .gate form,
 .idle,
 .sync,
+.sync-auth,
 .editor,
 .folder-editor {
   display: grid;
@@ -369,6 +370,7 @@ label {
 
 .idle,
 .sync,
+.sync-auth,
 .folder-editor {
   margin-top: 20px;
   padding-top: 18px;

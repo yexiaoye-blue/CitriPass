@@ -13,6 +13,9 @@ import {
   passwordStrength,
   searchItems,
   setIdleMinutes,
+  syncLogin,
+  syncLogout,
+  syncRegister,
   syncVault,
   touchVault,
   unlockVault,
@@ -538,6 +541,7 @@ function Workspace({
           busy={busy}
           onApply={(minutes) => onRun(() => setIdleMinutes(minutes))}
         />
+        <SyncAuthControl status={status} endpoint={endpoint} busy={busy} onRun={onRun} />
         <form
           className="sync"
           onSubmit={(event) => {
@@ -1486,6 +1490,96 @@ function NewFolder({
         创建文件夹
       </button>
     </form>
+  );
+}
+
+function SyncAuthControl({
+  status,
+  endpoint,
+  busy,
+  onRun,
+}: {
+  status: HostStatus;
+  endpoint: string;
+  busy: boolean;
+  onRun: (action: () => Promise<HostStatus>) => Promise<boolean>;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [deviceName, setDeviceName] = useState("桌面端");
+  const auth = status.syncAuth;
+
+  async function authorize(mode: "register" | "login") {
+    const success = await onRun(() =>
+      mode === "register"
+        ? syncRegister(endpoint, email, password, deviceName)
+        : syncLogin(endpoint, email, password, deviceName),
+    );
+    if (success) {
+      setPassword("");
+    }
+  }
+
+  return (
+    <section className="sync-auth">
+      <h2>同步授权</h2>
+      {auth?.ready ? (
+        <>
+          <p className="hint">已授权：{auth.email}</p>
+          <p className="ids">设备：{auth.deviceId}</p>
+          <button type="button" disabled={busy} onClick={() => void onRun(() => syncLogout())}>
+            退出授权
+          </button>
+        </>
+      ) : (
+        <>
+          <label>
+            邮箱
+            <input
+              type="email"
+              value={email}
+              autoComplete="username"
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </label>
+          <label>
+            密码
+            <input
+              type="password"
+              value={password}
+              autoComplete="current-password"
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          <label>
+            设备名称
+            <input
+              value={deviceName}
+              autoComplete="off"
+              onChange={(event) => setDeviceName(event.target.value)}
+            />
+          </label>
+          <div className="actions">
+            <button
+              className="primary"
+              type="button"
+              disabled={busy || !email.trim() || password.length < 8 || !deviceName.trim()}
+              onClick={() => void authorize("login")}
+            >
+              登录并授权
+            </button>
+            <button
+              type="button"
+              disabled={busy || !email.trim() || password.length < 8 || !deviceName.trim()}
+              onClick={() => void authorize("register")}
+            >
+              注册并授权
+            </button>
+          </div>
+          <p className="hint">授权后再点击同步。设备令牌只保存在当前桌面进程内。</p>
+        </>
+      )}
+    </section>
   );
 }
 

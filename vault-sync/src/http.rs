@@ -43,6 +43,7 @@ pub enum HttpSyncError {
 pub struct HttpSyncTransport {
     base_url: String,
     agent: ureq::Agent,
+    device_token: Option<String>,
 }
 
 impl HttpSyncTransport {
@@ -62,7 +63,17 @@ impl HttpSyncTransport {
             .timeout_write(Duration::from_secs(30))
             .redirects(0)
             .build();
-        Ok(Self { base_url, agent })
+        Ok(Self {
+            base_url,
+            agent,
+            device_token: None,
+        })
+    }
+
+    /// Attach a device bearer token to push and pull requests.
+    pub fn with_device_token(mut self, token: impl Into<String>) -> Self {
+        self.device_token = Some(token.into());
+        self
     }
 }
 
@@ -72,7 +83,7 @@ impl SyncTransport for HttpSyncTransport {
     fn push(&mut self, request: PushRequest) -> Result<PushResponse, Self::Error> {
         let body = encode_push(&request)?;
         let url = format!("{}/v1/vaults/{}/sync/push", self.base_url, request.vault_id);
-        let payload = send_json(&self.agent, &url, Some(body))?;
+        let payload = send_json(&self.agent, &url, Some(body), self.device_token.as_deref())?;
         decode_push(&payload)
     }
 
@@ -85,7 +96,7 @@ impl SyncTransport for HttpSyncTransport {
             url.push_str("&cursor=");
             url.push_str(&query_escape(cursor.as_str()));
         }
-        let payload = send_json(&self.agent, &url, None)?;
+        let payload = send_json(&self.agent, &url, None, self.device_token.as_deref())?;
         decode_pull(&payload)
     }
 }
@@ -197,11 +208,17 @@ fn send_json(
     agent: &ureq::Agent,
     url: &str,
     body: Option<String>,
+    bearer: Option<&str>,
 ) -> Result<String, HttpSyncError> {
     let request = if body.is_some() {
         agent.post(url)
     } else {
         agent.get(url)
+    };
+    let request = if let Some(token) = bearer {
+        request.set("Authorization", &format!("Bearer {token}"))
+    } else {
+        request
     };
     let result = if let Some(body) = body {
         request
@@ -248,6 +265,181 @@ where
     T: Deserialize<'de>,
 {
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// Errors returned by the sync service account and device endpoints.
+#[derive(Debug, Error)]
+pub enum HttpAuthError {
+    /// The configured base URL is not usable.
+    #[error("sync URL is not usable")]
+    Url,
+    /// The service rejected the authentication request.
+    #[error("sync auth service rejected the request: {0}")]
+    Service(String),
+    /// The HTTP client could not finish the call.
+    #[error("sync auth transport failed: {0}")]
+    Transport(String),
+    /// The service returned a response that does not match the contract.
+    #[error("sync auth response was malformed")]
+    Malformed,
+}
+
+/// Account session credentials returned by register or login.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AuthSession {
+    /// Account identifier.
+    pub account_id: String,
+    /// Canonical account email.
+    pub email: String,
+    /// Opaque account session bearer token.
+    pub session_token: String,
+    /// Session expiry from the service.
+    pub expires_at: String,
+}
+
+/// Device credentials returned when a device is registered.
+#[derive(Clone, Debug, Deserialize)]
+pub struct DeviceCredentials {
+    /// Device identifier.
+    pub device_id: String,
+    /// Opaque device synchronization bearer token.
+    pub device_token: String,
+    /// Device token expiry from the service.
+    pub expires_at: String,
+}
+
+/// HTTP client for account, device, and vault authorization setup.
+pub struct HttpAuthClient {
+    base_url: String,
+    agent: ureq::Agent,
+}
+
+impl HttpAuthClient {
+    /// Connect to an account-enabled sync service.
+    pub fn new(base_url: impl AsRef<str>) -> Result<Self, HttpAuthError> {
+        let base_url = normalize_base_url(base_url.as_ref()).map_err(|_| HttpAuthError::Url)?;
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .timeout_read(Duration::from_secs(30))
+            .timeout_write(Duration::from_secs(30))
+            .redirects(0)
+            .build();
+        Ok(Self { base_url, agent })
+    }
+
+    /// Register an account and create its session.
+    pub fn register(&self, email: &str, password: &str) -> Result<AuthSession, HttpAuthError> {
+        self.account_request("/v1/auth/register", email, password)
+    }
+
+    /// Log in to an account and create a new session.
+    pub fn login(&self, email: &str, password: &str) -> Result<AuthSession, HttpAuthError> {
+        self.account_request("/v1/auth/login", email, password)
+    }
+
+    /// Register a device using an account session.
+    pub fn create_device(
+        &self,
+        session_token: &str,
+        device_id: Uuid,
+        name: &str,
+    ) -> Result<DeviceCredentials, HttpAuthError> {
+        let body = serde_json::json!({"device_id": device_id.to_string(), "name": name});
+        let payload = self.request(
+            "POST",
+            "/v1/devices",
+            Some(body.to_string()),
+            Some(session_token),
+        )?;
+        serde_json::from_str(&payload).map_err(|_| HttpAuthError::Malformed)
+    }
+
+    /// Create or claim the local vault id for the authenticated account.
+    pub fn create_vault(&self, session_token: &str, vault_id: Uuid) -> Result<Uuid, HttpAuthError> {
+        let body = serde_json::json!({"vault_id": vault_id.to_string()});
+        let payload = self.request(
+            "POST",
+            "/v1/vaults",
+            Some(body.to_string()),
+            Some(session_token),
+        )?;
+        let response: VaultResponse =
+            serde_json::from_str(&payload).map_err(|_| HttpAuthError::Malformed)?;
+        Uuid::parse_str(&response.vault_id).map_err(|_| HttpAuthError::Malformed)
+    }
+
+    /// Revoke a device using an account session.
+    pub fn revoke_device(&self, session_token: &str, device_id: Uuid) -> Result<(), HttpAuthError> {
+        self.request(
+            "DELETE",
+            &format!("/v1/devices/{device_id}"),
+            None,
+            Some(session_token),
+        )?;
+        Ok(())
+    }
+
+    /// Revoke the current account session.
+    pub fn logout(&self, session_token: &str) -> Result<(), HttpAuthError> {
+        self.request("POST", "/v1/auth/logout", None, Some(session_token))?;
+        Ok(())
+    }
+
+    fn account_request(
+        &self,
+        path: &str,
+        email: &str,
+        password: &str,
+    ) -> Result<AuthSession, HttpAuthError> {
+        let body = serde_json::json!({"email": email, "password": password});
+        let payload = self.request("POST", path, Some(body.to_string()), None)?;
+        serde_json::from_str(&payload).map_err(|_| HttpAuthError::Malformed)
+    }
+
+    fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<String>,
+        bearer: Option<&str>,
+    ) -> Result<String, HttpAuthError> {
+        let url = format!("{}{}", self.base_url, path);
+        let mut request = match method {
+            "POST" => self.agent.post(&url),
+            "DELETE" => self.agent.delete(&url),
+            _ => return Err(HttpAuthError::Transport("unsupported auth method".into())),
+        };
+        request = request.set("Accept", "application/json");
+        if let Some(token) = bearer {
+            request = request.set("Authorization", &format!("Bearer {token}"));
+        }
+        let result = if let Some(body) = body {
+            request
+                .set("Content-Type", "application/json")
+                .send_string(&body)
+        } else {
+            request.call()
+        };
+        match result {
+            Ok(response) => read_body(response.into_reader()).map_err(|error| match error {
+                HttpSyncError::Transport(message) => HttpAuthError::Transport(message),
+                _ => HttpAuthError::Malformed,
+            }),
+            Err(ureq::Error::Status(status, response)) => {
+                let payload = read_body(response.into_reader()).unwrap_or_default();
+                let code = serde_json::from_str::<ErrorBody>(&payload)
+                    .map(|body| body.error)
+                    .unwrap_or_else(|_| "store".to_string());
+                Err(HttpAuthError::Service(format!("{code} ({status})")))
+            }
+            Err(error) => Err(HttpAuthError::Transport(error.to_string())),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct VaultResponse {
+    vault_id: String,
 }
 
 fn query_escape(value: &str) -> String {
