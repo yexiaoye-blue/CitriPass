@@ -45,7 +45,7 @@ func TestServiceAccountSessionDeviceAndVaultLifecycle(t *testing.T) {
 		t.Fatalf("login = %+v err=%v", loggedIn, err)
 	}
 
-	device, err := service.CreateDevice(ctx, registered.Account.ID, "Laptop")
+	device, err := service.CreateDevice(ctx, registered.Account.ID, "Laptop", nil)
 	if err != nil || device.Token == "" {
 		t.Fatalf("device = %+v err=%v", device, err)
 	}
@@ -54,7 +54,7 @@ func TestServiceAccountSessionDeviceAndVaultLifecycle(t *testing.T) {
 		t.Fatalf("authenticated device = %+v err=%v", authenticatedDevice, err)
 	}
 
-	vaultID, err := service.CreateVault(ctx, registered.Account.ID)
+	vaultID, err := service.CreateVault(ctx, registered.Account.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

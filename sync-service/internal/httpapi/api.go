@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -77,7 +78,8 @@ type accountResponse struct {
 }
 
 type deviceRequest struct {
-	Name string `json:"name"`
+	DeviceID *uuid.UUID `json:"device_id,omitempty"`
+	Name     string     `json:"name"`
 }
 
 type deviceResponse struct {
@@ -96,6 +98,10 @@ type createdDeviceResponse struct {
 
 type vaultResponse struct {
 	VaultID uuid.UUID `json:"vault_id"`
+}
+
+type vaultRequest struct {
+	VaultID *uuid.UUID `json:"vault_id,omitempty"`
 }
 
 func register(w http.ResponseWriter, r *http.Request, service *auth.Service) {
@@ -182,7 +188,7 @@ func createDevice(w http.ResponseWriter, r *http.Request, service *auth.Service)
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	result, err := service.CreateDevice(r.Context(), session.AccountID, request.Name)
+	result, err := service.CreateDevice(r.Context(), session.AccountID, request.Name, request.DeviceID)
 	if err != nil {
 		writeAuthError(w, err)
 		return
@@ -219,7 +225,11 @@ func createVault(w http.ResponseWriter, r *http.Request, service *auth.Service) 
 	if !ok {
 		return
 	}
-	vaultID, err := service.CreateVault(r.Context(), session.AccountID)
+	var request vaultRequest
+	if !decodeOptionalJSON(w, r, &request) {
+		return
+	}
+	vaultID, err := service.CreateVault(r.Context(), session.AccountID, request.VaultID)
 	if err != nil {
 		writeAuthError(w, err)
 		return
@@ -458,6 +468,22 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		writeAuthError(w, auth.ErrInvalidRequest)
+		return false
+	}
+	return true
+}
+
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, target any) bool {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err != nil {
+		writeAuthError(w, auth.ErrInvalidRequest)
+		return false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return true
+	}
+	if err := json.Unmarshal(body, target); err != nil {
 		writeAuthError(w, auth.ErrInvalidRequest)
 		return false
 	}

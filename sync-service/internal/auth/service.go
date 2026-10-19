@@ -131,7 +131,7 @@ func (s *Service) ListDevices(ctx context.Context, accountID uuid.UUID) ([]Devic
 
 // CreateDevice registers a device and returns its one-time synchronization
 // bearer secret.
-func (s *Service) CreateDevice(ctx context.Context, accountID uuid.UUID, name string) (DeviceResult, error) {
+func (s *Service) CreateDevice(ctx context.Context, accountID uuid.UUID, name string, requestedID *uuid.UUID) (DeviceResult, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 128 {
 		return DeviceResult{}, ErrInvalidRequest
@@ -142,7 +142,11 @@ func (s *Service) CreateDevice(ctx context.Context, accountID uuid.UUID, name st
 	}
 	now := s.now()
 	expiresAt := now.Add(DeviceTokenLifetime)
-	device, err := s.store.CreateDevice(ctx, accountID, uuid.New(), name, tokenHash, now, expiresAt)
+	deviceID := uuid.New()
+	if requestedID != nil && *requestedID != uuid.Nil {
+		deviceID = *requestedID
+	}
+	device, err := s.store.CreateDevice(ctx, accountID, deviceID, name, tokenHash, now, expiresAt)
 	if err != nil {
 		return DeviceResult{}, err
 	}
@@ -179,8 +183,11 @@ func (s *Service) AuthenticateDevice(ctx context.Context, token string) (DeviceT
 }
 
 // CreateVault creates a vault owned by the account.
-func (s *Service) CreateVault(ctx context.Context, accountID uuid.UUID) (uuid.UUID, error) {
+func (s *Service) CreateVault(ctx context.Context, accountID uuid.UUID, requestedID *uuid.UUID) (uuid.UUID, error) {
 	vaultID := uuid.New()
+	if requestedID != nil && *requestedID != uuid.Nil {
+		vaultID = *requestedID
+	}
 	if err := s.store.CreateVault(ctx, accountID, vaultID); err != nil {
 		return uuid.Nil, err
 	}
